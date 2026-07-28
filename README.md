@@ -1,6 +1,6 @@
 # Cerne Boleto
 
-Biblioteca e CLI para extrair códigos validados e informações gerais de boletos a partir de PDF, JPEG e PNG. As entradas podem ser caminhos locais, URLs HTTP(S) ou bytes em memória; o processamento usa CPU local, sem depender de um serviço externo de OCR.
+Biblioteca e CLI para extrair códigos validados e informações gerais de boletos a partir de PDF, JPEG e PNG. As entradas podem ser caminhos locais, URLs HTTP(S), bytes em memória, `Readable` do Node.js ou qualquer `AsyncIterable<Uint8Array>`; o processamento usa CPU local, sem depender de um serviço externo de OCR.
 
 O projeto reconhece boletos de cobrança e de arrecadação, consolida evidências vindas do texto do PDF, do código de barras ITF e do OCR e só retorna como resultado códigos que passam pelas regras estruturais, semânticas e de dígitos verificadores implementadas pela biblioteca.
 
@@ -9,7 +9,8 @@ O projeto reconhece boletos de cobrança e de arrecadação, consolida evidênci
 ## Recursos principais
 
 - PDF com ou sem camada de texto, JPEG e PNG, detectados pelo conteúdo dos bytes.
-- Entrada por arquivo local, URL HTTP(S), `ArrayBuffer`, `Uint8Array` ou `Buffer`.
+- Entrada por arquivo local, URL HTTP(S), `ArrayBuffer`, `Uint8Array`, `Buffer`, `Readable` ou `AsyncIterable<Uint8Array>`.
+- Política explícita de armazenamento para streams: `memory`, `file` ou `auto`.
 - Extração individual e em lote, com concorrência limitada e ordem estável.
 - Leitura de linha digitável no texto, código de barras ITF e OCR em português.
 - Validação de cobrança (44/47 dígitos) e arrecadação (44/48 dígitos).
@@ -53,6 +54,19 @@ if (extraction.status === "success" || extraction.status === "partial") {
 ```
 
 Falhas de leitura e processamento são representadas em `ExtractionResult`; consulte `status`, `error`, `warnings` e `metadata.complete` em vez de depender apenas de exceções.
+
+### Entrada em stream
+
+```js
+const result = await extractBoletos(readable, {
+  streamStorage: "auto",
+  streamMemoryThresholdBytes: 1024 * 1024,
+  maxFileSizeBytes: 25 * 1024 * 1024,
+  signal,
+});
+```
+
+`streamStorage` decide onde os bytes ficam enquanto o stream é consumido: `memory` acumula na memória do processo, `file` grava cada bloco em um temporário do extrator e `auto` (padrão) começa na memória e migra para um temporário ao ultrapassar `streamMemoryThresholdBytes`. A política vale apenas para streams; `Buffer`, `Uint8Array` e `ArrayBuffer` já estão na memória e nunca vão para disco. Temporários criados pelo extrator são removidos ao fim da chamada, inclusive em erro, timeout, aborto e `not_found`. O lote aceita um stream como item direto ou dentro de um descritor `{ input }`. Detalhes em [docs/API.md](docs/API.md#entradas-em-stream).
 
 ## Uso rápido da CLI
 

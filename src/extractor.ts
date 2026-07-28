@@ -3,8 +3,9 @@ import { findCandidatesInOcrText } from "./candidates/from-ocr";
 import { findCandidatesInDecodedValue, findCandidatesInPositionedText, findCandidatesInText } from "./candidates/from-text";
 import type { CandidateEvidence, CandidateTextLine, FieldCandidate, NormalizedBounds } from "./candidates/types";
 import { WorkGuard } from "./deadline";
-import { loadDocumentInput } from "./document/load-input";
+import { loadDocumentInput, type LoadedInput } from "./document/load-input";
 import { openDocument } from "./document/open-document";
+import { isAsyncByteSource } from "./document/read-stream";
 import type { DocumentHandle, DocumentPageLike, ExtractedPageText, RenderedPage } from "./document/types";
 import { ExtractionFailure } from "./errors";
 import { getRenderRecipes, InvalidOptionsError, resolveOptions, type RenderRecipe, type ResolvedOptions } from "./options";
@@ -501,14 +502,18 @@ export async function extractBoletos(input: DocumentInput, optionsInput: Extract
   let ocrSession: OcrSession | null = null;
   let cursor: PageCursor | null = null;
   let reuse: RenderReuse | null = null;
+  let loaded: LoadedInput | null = null;
   let result: ExtractionResult;
 
   try {
     guard = new WorkGuard(options, startedAt);
     guard.check();
-    const loaded = await loadDocumentInput(input, options.maxFileSizeBytes, {
+    loaded = await loadDocumentInput(input, options.maxFileSizeBytes, {
       ...(options.requestHeaders === undefined ? {} : { requestHeaders: options.requestHeaders }),
       signal: guard.signal,
+      streamStorage: options.streamStorage,
+      streamMemoryThresholdBytes: options.streamMemoryThresholdBytes,
+      ...(options.streamTempDirectory === undefined ? {} : { streamTempDirectory: options.streamTempDirectory }),
     });
     guard.check();
     state.fileSizeBytes = loaded.size;
@@ -558,16 +563,26 @@ export async function extractBoletos(input: DocumentInput, optionsInput: Extract
     disposeQuietly(() => reuse?.dispose());
     disposeQuietly(() => cursor?.release());
     await Promise.all([releaseQuietly(() => ocrSession?.terminate()), releaseQuietly(() => handle?.close())]);
+    await releaseQuietly(() => loaded?.cleanup());
   }
   return finalizeResultDuration(result, startedAt);
 }
 
-function isSimpleDocumentInput(value: unknown): value is DocumentInput {
-  return typeof value === "string" || value instanceof ArrayBuffer || value instanceof Uint8Array;
+/**
+ * Reports whether a batch item is itself a document source rather than a source descriptor.
+ *
+ * A `Readable` and an async generator are ordinary objects, so this check has to run before the descriptor
+ * branch: otherwise a streamed batch item would be rejected for not being a plain object with an `input` key.
+ *
+ * @param {unknown} value - The batch item or descriptor field to classify.
+ * @returns {boolean} `true` when the value is a supported document input.
+ */
+function isDocumentInput(value: unknown): value is DocumentInput {
+  return typeof value === "string" || value instanceof ArrayBuffer || value instanceof Uint8Array || isAsyncByteSource(value);
 }
 
 function resolveBatchSource(value: BoletoBatchInput): ResolvedBatchSource {
-  if (isSimpleDocumentInput(value)) {
+  if (isDocumentInput(value)) {
     return { input: value };
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -586,7 +601,7 @@ function resolveBatchSource(value: BoletoBatchInput): ResolvedBatchSource {
 
   const inputDescriptor = Object.getOwnPropertyDescriptor(value, "input");
   const headersDescriptor = Object.getOwnPropertyDescriptor(value, "requestHeaders");
-  if (inputDescriptor === undefined || !("value" in inputDescriptor) || !isSimpleDocumentInput(inputDescriptor.value)) {
+  if (inputDescriptor === undefined || !("value" in inputDescriptor) || !isDocumentInput(inputDescriptor.value)) {
     throw new ExtractionFailure("INVALID_INPUT", "A batch source descriptor must contain a document input.");
   }
   if (headersDescriptor !== undefined && (!("value" in headersDescriptor) || (headersDescriptor.value !== undefined && (typeof headersDescriptor.value !== "object" || headersDescriptor.value === null || Array.isArray(headersDescriptor.value))))) {

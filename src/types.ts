@@ -1,11 +1,28 @@
+import type { Readable } from "node:stream";
+
 import type { BoletoComponents, BoletoLayout } from "./validation/boleto";
 
 /**
- * Represents a local path, HTTP(S) URL, or in-memory byte source accepted for document extraction.
+ * Represents a local path, HTTP(S) URL, in-memory byte source, `Readable`, or async byte iterable accepted for document extraction.
  *
  * @since 0.2.0
  */
-export type DocumentInput = string | ArrayBuffer | Uint8Array;
+export type DocumentInput = string | ArrayBuffer | Uint8Array | Readable | AsyncIterable<Uint8Array>;
+
+/**
+ * Selects where the bytes of a streamed input are held while the stream is consumed.
+ *
+ * `memory` accumulates the stream in process memory under `maxFileSizeBytes`. `file` writes every chunk to an
+ * extractor-owned temporary file as it arrives. `auto` keeps the stream in memory until
+ * `streamMemoryThresholdBytes` would be exceeded and then migrates the bytes already received to a temporary
+ * file without restarting the read.
+ *
+ * The policy applies only to `Readable` and async-iterable inputs. Bytes supplied as `ArrayBuffer`,
+ * `Uint8Array`, or `Buffer` are already resident in memory and are never written to disk.
+ *
+ * @since 0.6.0
+ */
+export type StreamStorage = "memory" | "file" | "auto";
 
 /**
  * Represents a document input through the PDF-oriented public alias.
@@ -77,8 +94,14 @@ export interface ExtractOptions {
   ocr?: OcrMode;
   /** Limits the number of document pages processed, from 1 through 10,000. */
   maxPages?: number;
-  /** Limits the accepted source size in bytes, including downloaded content. */
+  /** Limits the accepted source size in bytes, including downloaded and streamed content. */
   maxFileSizeBytes?: number;
+  /** Selects where a `Readable` or async-iterable input is held while it is consumed, defaulting to `auto`; path, URL, and in-memory inputs ignore it. */
+  streamStorage?: StreamStorage;
+  /** Sets the byte count an `auto` stream may hold in memory before it migrates to a temporary file, from one byte through 1 GiB and defaulting to 8 MiB. */
+  streamMemoryThresholdBytes?: number;
+  /** Selects an existing directory for extractor-owned temporary stream files, defaulting to the system temporary directory. */
+  streamTempDirectory?: string;
   /** Limits the pixel area allocated for each rendered page. */
   maxPixelsPerPage?: number;
   /** Limits the declared pixel area of a source image before it is decoded. */
@@ -266,7 +289,7 @@ export interface ExtractionResult {
  * @since 0.1.0
  */
 export interface BoletoBatchSourceDescriptor {
-  /** Contains the local path, HTTP(S) URL, or in-memory bytes to extract. */
+  /** Contains the local path, HTTP(S) URL, in-memory bytes, `Readable`, or async byte iterable to extract. */
   input: DocumentInput;
   /** Supplies caller-controlled headers when `input` is an HTTP(S) URL. */
   requestHeaders?: Readonly<Record<string, string>>;

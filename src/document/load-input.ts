@@ -1,8 +1,11 @@
 import { readFile, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 
 import { ExtractionFailure } from "../errors";
-import type { DocumentFormat, DocumentInput } from "../types";
+import { DEFAULT_STREAM_MEMORY_THRESHOLD_BYTES, DEFAULT_STREAM_STORAGE } from "../options";
+import type { DocumentFormat, DocumentInput, StreamStorage } from "../types";
 import { detectDocumentFormat } from "./detect-format";
+import { captureStream, isAsyncByteSource } from "./read-stream";
 
 const MAX_REDIRECTS = 5;
 const INITIAL_DOWNLOAD_BUFFER_BYTES = 64 * 1024;
@@ -13,26 +16,58 @@ const WINDOWS_DRIVE_PATH = /^[a-z]:/i;
 const HTTP_URL = /^https?:\/\//i;
 const URI_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 
-/**
- * Represents owned document bytes after size and format validation.
- */
-export interface LoadedInput {
-  /** Stores an owned view of the validated document bytes. */
-  data: Uint8Array;
+interface LoadedInputFields {
   /** Records the validated document size in bytes. */
   size: number;
   /** Identifies the document format detected from its byte signature. */
   format: DocumentFormat;
+  /** Releases the extractor-owned temporary file backing this input, if any. It never removes a caller-supplied path. */
+  cleanup: () => Promise<void>;
 }
 
 /**
- * Configures request metadata and cancellation for loading a document input.
+ * Represents validated document bytes resident in process memory.
+ */
+export interface LoadedBytes extends LoadedInputFields {
+  /** Stores an owned view of the validated document bytes. */
+  data: Uint8Array;
+  /** Marks the input as memory-resident. */
+  path: null;
+}
+
+/**
+ * Represents validated document bytes held in an extractor-owned temporary file.
+ */
+export interface LoadedFile extends LoadedInputFields {
+  /** Marks the input as file-backed. */
+  data: null;
+  /** Locates the extractor-owned temporary file holding the validated bytes. */
+  path: string;
+}
+
+/**
+ * Represents owned document bytes after size and format validation, held either in memory or in an extractor-owned temporary file.
+ */
+export type LoadedInput = LoadedBytes | LoadedFile;
+
+/**
+ * Configures request metadata, stream storage, and cancellation for loading a document input.
  */
 export interface LoadDocumentInputControls {
   /** Supplies validated caller headers for HTTP and HTTPS inputs only. */
   requestHeaders?: Readonly<Record<string, string>>;
-  /** Cancels an in-progress file read or remote download when aborted. */
+  /** Cancels an in-progress file read, remote download, or stream read when aborted. */
   signal?: AbortSignal;
+  /** Selects where a `Readable` or async-iterable input is held while it is consumed, defaulting to `auto`. */
+  streamStorage?: StreamStorage;
+  /** Sets the byte count an `auto` stream may hold in memory before migrating to a temporary file. */
+  streamMemoryThresholdBytes?: number;
+  /** Selects the existing directory that receives extractor-owned temporary stream files. */
+  streamTempDirectory?: string;
+}
+
+function noResources(): Promise<void> {
+  return Promise.resolve();
 }
 
 function checkedFormat(data: Uint8Array): DocumentFormat {
@@ -43,27 +78,27 @@ function checkedFormat(data: Uint8Array): DocumentFormat {
   return format;
 }
 
-function validateDocumentBytes(data: Uint8Array, maxFileSizeBytes: number): DocumentFormat {
-  if (data.byteLength === 0) {
+function validateDocumentBytes(header: Uint8Array, size: number, maxFileSizeBytes: number): DocumentFormat {
+  if (size === 0) {
     throw new ExtractionFailure("INVALID_INPUT", "The document input is empty.");
   }
-  if (data.byteLength > maxFileSizeBytes) {
+  if (size > maxFileSizeBytes) {
     throw new ExtractionFailure("FILE_TOO_LARGE", `The document exceeds the configured ${maxFileSizeBytes}-byte limit.`);
   }
-  return checkedFormat(data);
+  return checkedFormat(header);
 }
 
 function checkedBytes(data: Uint8Array, maxFileSizeBytes: number): LoadedInput {
-  const format = validateDocumentBytes(data, maxFileSizeBytes);
+  const format = validateDocumentBytes(data, data.byteLength, maxFileSizeBytes);
   const bytes = new Uint8Array(data.byteLength);
   bytes.set(data);
-  return { data: bytes, size: data.byteLength, format };
+  return { data: bytes, path: null, size: data.byteLength, format, cleanup: noResources };
 }
 
 function checkedOwnedBytes(data: Uint8Array, maxFileSizeBytes: number): LoadedInput {
-  const format = validateDocumentBytes(data, maxFileSizeBytes);
+  const format = validateDocumentBytes(data, data.byteLength, maxFileSizeBytes);
   const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  return { data: bytes, size: data.byteLength, format };
+  return { data: bytes, path: null, size: data.byteLength, format, cleanup: noResources };
 }
 
 function checkedRemoteUrl(url: URL): URL {
@@ -207,8 +242,8 @@ async function readRemoteBody(response: Response, maxFileSizeBytes: number, sign
   }
 
   const bytes = data.subarray(0, total);
-  const format = validateDocumentBytes(bytes, maxFileSizeBytes);
-  return { data: bytes, size: total, format };
+  const format = validateDocumentBytes(bytes, total, maxFileSizeBytes);
+  return { data: bytes, path: null, size: total, format, cleanup: noResources };
 }
 
 async function downloadDocument(initialUrl: URL, maxFileSizeBytes: number, controls: LoadDocumentInputControls): Promise<LoadedInput> {
@@ -267,14 +302,46 @@ async function downloadDocument(initialUrl: URL, maxFileSizeBytes: number, contr
 }
 
 /**
- * Loads, owns, and validates document bytes from memory, a local path, or an
+ * Loads a `Readable` or async byte iterable under the configured storage policy and validates the result.
+ *
+ * A temporary file created here is removed before the failure is rethrown, so a rejected load never leaves one
+ * behind; a successful load transfers that responsibility to the returned `cleanup`.
+ *
+ * @param {AsyncIterable<Uint8Array>} input - The stream to consume.
+ * @param {number} maxFileSizeBytes - The maximum accepted document size in bytes.
+ * @param {LoadDocumentInputControls} controls - The storage policy, temporary directory, and cancellation signal.
+ * @returns {Promise<LoadedInput>} Resolves with the received bytes or their temporary file, size, and detected format.
+ * @throws {ExtractionFailure} If the stream is cancelled, exceeds the size limit, is empty, yields a non-byte chunk, or carries an unsupported signature.
+ */
+async function loadStreamInput(input: AsyncIterable<Uint8Array>, maxFileSizeBytes: number, controls: LoadDocumentInputControls): Promise<LoadedInput> {
+  const captured = await captureStream(input, {
+    storage: controls.streamStorage ?? DEFAULT_STREAM_STORAGE,
+    memoryThresholdBytes: controls.streamMemoryThresholdBytes ?? DEFAULT_STREAM_MEMORY_THRESHOLD_BYTES,
+    temporaryDirectory: controls.streamTempDirectory ?? tmpdir(),
+    maxFileSizeBytes,
+    ...(controls.signal === undefined ? {} : { signal: controls.signal }),
+  });
+  try {
+    const format = validateDocumentBytes(captured.header, captured.size, maxFileSizeBytes);
+    if (captured.data !== null) {
+      return { data: captured.data, path: null, size: captured.size, format, cleanup: noResources };
+    }
+    return { data: null, path: captured.path, size: captured.size, format, cleanup: captured.cleanup };
+  } catch (error) {
+    await captured.cleanup();
+    throw error;
+  }
+}
+
+/**
+ * Loads, owns, and validates document bytes from memory, a stream, a local path, or an
  * HTTP(S) URL before extraction begins.
  *
- * @param {DocumentInput} input - The in-memory bytes, local path, or HTTP(S) URL to load.
+ * @param {DocumentInput} input - The in-memory bytes, `Readable`, async byte iterable, local path, or HTTP(S) URL to load.
  * @param {number} maxFileSizeBytes - The maximum accepted document size in bytes.
- * @param {LoadDocumentInputControls} [controls={}] - Optional request headers and cancellation signal.
- * @returns {Promise<LoadedInput>} Resolves with owned bytes, their size, and the detected format.
- * @throws {ExtractionFailure} If the input, request controls, document format, file access, download, or size is invalid.
+ * @param {LoadDocumentInputControls} [controls={}] - Optional request headers, stream storage settings, and cancellation signal.
+ * @returns {Promise<LoadedInput>} Resolves with owned bytes or an extractor-owned temporary file, the size, and the detected format.
+ * @throws {ExtractionFailure} If the input, request controls, document format, file access, download, stream, or size is invalid.
  * @throws {Error} If an aborted remote request rejects with its platform-specific abort error.
  * @throws {TypeError} If the supplied `ArrayBuffer` has been detached.
  * @throws {RangeError} If an in-memory input cannot be copied within available memory.
@@ -329,5 +396,8 @@ export async function loadDocumentInput(input: DocumentInput, maxFileSizeBytes: 
   if (input instanceof ArrayBuffer) {
     return checkedBytes(new Uint8Array(input), maxFileSizeBytes);
   }
-  throw new ExtractionFailure("INVALID_INPUT", "Input must be a local path, HTTP(S) URL, ArrayBuffer, Buffer, or Uint8Array.");
+  if (isAsyncByteSource(input)) {
+    return loadStreamInput(input, maxFileSizeBytes, controls);
+  }
+  throw new ExtractionFailure("INVALID_INPUT", "Input must be a local path, HTTP(S) URL, ArrayBuffer, Buffer, Uint8Array, Readable, or async iterable of byte chunks.");
 }

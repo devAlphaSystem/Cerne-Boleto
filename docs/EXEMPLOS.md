@@ -56,6 +56,55 @@ const result = await extractBoletos(bytes, {
 
 O carregador copia a entrada em memória antes do processamento. O formato continua sendo identificado pelos bytes.
 
+## Extrair de um `Readable`
+
+```ts
+import { createReadStream } from "node:fs";
+import { extractBoletos } from "cerne-boleto";
+
+const result = await extractBoletos(createReadStream("./boleto.pdf"), {
+  streamStorage: "auto",
+  streamMemoryThresholdBytes: 1024 * 1024,
+  maxFileSizeBytes: 25 * 1024 * 1024,
+});
+```
+
+Com `auto`, o documento fica na memória até 1 MiB e migra para um arquivo temporário do extrator acima disso, sem reiniciar a leitura. O temporário é removido ao fim da chamada, inclusive em erro, timeout, aborto ou `not_found`.
+
+## Receber um upload sem acumular na memória
+
+```ts
+import type { Readable } from "node:stream";
+import { extractBoletos } from "cerne-boleto";
+
+async function inspectUploadStream(upload: Readable, signal: AbortSignal) {
+  return extractBoletos(upload, {
+    streamStorage: "file",
+    streamTempDirectory: "/var/tmp/cerne",
+    maxFileSizeBytes: 25 * 1024 * 1024,
+    signal,
+  });
+}
+```
+
+`upload` pode ser qualquer `Readable`, incluindo o `IncomingMessage` de um servidor HTTP. Com `file`, cada bloco é gravado no temporário assim que chega e o próximo bloco só é lido depois da gravação, então o produtor é limitado pela velocidade do disco em vez de encher a memória durante o recebimento. `streamTempDirectory` precisa existir; se não for possível criar o arquivo ali, a chamada devolve `RESOURCE_LIMIT` em vez de gravar em outro lugar.
+
+## Extrair de um gerador assíncrono
+
+```ts
+import { extractBoletos } from "cerne-boleto";
+
+async function* blocos(partes: Uint8Array[]) {
+  for (const parte of partes) {
+    yield parte;
+  }
+}
+
+const result = await extractBoletos(blocos(partes), { streamStorage: "memory" });
+```
+
+Qualquer `AsyncIterable<Uint8Array>` é aceito pelo mesmo caminho do `Readable`. Todo bloco precisa ser `Uint8Array` ou `Buffer`; qualquer outro tipo devolve `INVALID_INPUT`.
+
 ## Baixar uma URL autenticada
 
 ```ts
@@ -135,6 +184,18 @@ for (const match of batch.results) {
 ```
 
 Cabeçalhos remotos pertencem a cada descritor; não existe `requestHeaders` global no lote. `concurrency` aceita de 1 a 8.
+
+Um item do lote também pode ser um `Readable` ou um async iterable, direto no array ou dentro de um descritor:
+
+```ts
+const batch = await extractBoletoBatch([createReadStream("./boletos/a.pdf"), { input: createReadStream("./boletos/b.pdf") }], {
+  concurrency: 2,
+  streamStorage: "file",
+  streamTempDirectory: "/var/tmp/cerne",
+});
+```
+
+As opções de stream valem para todas as fontes do lote. Cada fonte consome o próprio stream e remove o próprio temporário ao terminar, então nomes não colidem mesmo com concorrência máxima. Um stream só pode ser consumido uma vez: não repita a mesma instância em dois itens.
 
 ## Consumir informações gerais com proveniência
 
