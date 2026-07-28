@@ -21,7 +21,6 @@ interface EvidenceGroup {
 interface VisibleResolution {
   field: ExtractedBoletoField | null;
   conflict: boolean;
-  /** True when a strict majority resolved the field over minority values. */
   discardedMinority: boolean;
 }
 
@@ -150,11 +149,6 @@ function comparableValue(value: string): string {
   return value.normalize("NFKC").normalize("NFD").replace(/\p{M}/gu, "").replace(/\s+/gu, " ").trim().toUpperCase();
 }
 
-/**
- * OCR passes are deterministic derivatives of the same visual page. They may
- * improve the selected value or confidence, but they must not create extra
- * majority votes merely because the same pixels were rotated or filtered.
- */
 function collapseDerivedFieldCandidates(candidates: readonly FieldCandidate[]): FieldCandidate[] {
   const output: FieldCandidate[] = [];
   const ocrByValue = new Map<string, FieldCandidate>();
@@ -187,11 +181,6 @@ function orderByReliability(candidates: readonly FieldCandidate[]): FieldCandida
 
 const PREFIX_MERGE_KINDS = new Set<FieldCandidate["kind"]>(["institution", "beneficiary", "finalBeneficiary", "payer"]);
 
-/**
- * A name repeated across sections may be truncated by a line wrap in one of
- * them. When every shorter value is a word-boundary prefix of the longest
- * one, all evidence describes the same entity and the longest value wins.
- */
 function prefixConsolidation(byValue: ReadonlyMap<string, FieldCandidate[]>, kind: FieldCandidate["kind"]): { matching: FieldCandidate[]; representative: FieldCandidate } | null {
   if (!PREFIX_MERGE_KINDS.has(kind)) {
     return null;
@@ -280,11 +269,6 @@ function samePhysicalEvidence(left: NormalizedBounds, right: NormalizedBounds): 
   return horizontalOverlap(left, right) >= 0.5 && Math.abs(leftCenterY - rightCenterY) <= Math.max(0.12, left.height, right.height);
 }
 
-/**
- * Counts independent physical occurrences while collapsing repeated render
- * passes of the same page/source. Distinct recognition families remain
- * independent, as do spatially separate copies of the same code.
- */
 function occurrenceCount(items: readonly CandidateEvidence[]): number {
   const byPageAndSource = new Map<string, CandidateEvidence[]>();
   for (const item of items) {
@@ -311,11 +295,6 @@ function candidatesFor(fields: FieldCandidate[], kind: FieldCandidate["kind"], p
   return fields.filter((field) => field.kind === kind && (partyRole === undefined || field.partyRole === partyRole));
 }
 
-/**
- * Heuristic candidates never reach cobrança results, whose labeled sections
- * are authoritative. In arrecadação, a labeled candidate for the same field
- * still silences its heuristic counterparts.
- */
 function fieldsForLayout(fields: FieldCandidate[], layout: BoletoLayout): FieldCandidate[] {
   if (layout === "cobranca") {
     return fields.filter((field) => field.heuristic !== true);

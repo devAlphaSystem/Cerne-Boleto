@@ -76,6 +76,9 @@ export async function renderPage(page: PdfPageLike, recipe: RenderRecipe, maxPix
     mapBoundsToPage(bounds) {
       return undoRecipeRotation(bounds, recipe.rotation);
     },
+    releasePixels(): void {
+      pixels = null;
+    },
     dispose(): void {
       if (disposed) {
         return;

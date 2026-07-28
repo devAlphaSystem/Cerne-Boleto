@@ -36,6 +36,41 @@ interface ResolvedBatchSource {
   requestHeaders?: Readonly<Record<string, string>>;
 }
 
+class RenderReuse {
+  readonly #wanted: RenderRecipe | null;
+  #pageNumber = 0;
+  #rendered: RenderedPage | null = null;
+
+  public constructor(wanted: RenderRecipe | null) {
+    this.#wanted = wanted;
+  }
+
+  public offer(pageNumber: number, recipe: RenderRecipe, rendered: RenderedPage): void {
+    if (recipe !== this.#wanted) {
+      rendered.dispose();
+      return;
+    }
+    this.dispose();
+    rendered.releasePixels();
+    this.#pageNumber = pageNumber;
+    this.#rendered = rendered;
+  }
+
+  public take(pageNumber: number, recipe: RenderRecipe): RenderedPage | null {
+    if (this.#rendered === null || recipe !== this.#wanted || pageNumber !== this.#pageNumber) {
+      return null;
+    }
+    const rendered = this.#rendered;
+    this.#rendered = null;
+    return rendered;
+  }
+
+  public dispose(): void {
+    this.#rendered?.dispose();
+    this.#rendered = null;
+  }
+}
+
 function emptyState(): MutableRunState {
   return {
     evidence: [],
@@ -118,12 +153,27 @@ function invalidOptionsResult(error: InvalidOptionsError, startedAt: MonotonicTi
   return failureResult("INVALID_OPTIONS", error.message, resolveOptions(), startedAt);
 }
 
-async function withPage<T>(handle: DocumentHandle, pageNumber: number, work: (page: DocumentPageLike) => Promise<T>): Promise<T> {
-  const page = await handle.getPage(pageNumber);
-  try {
-    return await work(page);
-  } finally {
-    page.cleanup();
+class PageCursor {
+  readonly #handle: DocumentHandle;
+  #pageNumber = 0;
+  #page: DocumentPageLike | null = null;
+
+  public constructor(handle: DocumentHandle) {
+    this.#handle = handle;
+  }
+
+  public async use<T>(pageNumber: number, work: (page: DocumentPageLike) => Promise<T>): Promise<T> {
+    if (this.#pageNumber !== pageNumber) {
+      this.release();
+    }
+    this.#page ??= await this.#handle.getPage(pageNumber);
+    this.#pageNumber = pageNumber;
+    return work(this.#page);
+  }
+
+  public release(): void {
+    this.#page?.cleanup();
+    this.#page = null;
   }
 }
 
@@ -176,11 +226,11 @@ function hasPageEvidence(evidence: CandidateEvidence[], page: number): boolean {
   return evidence.some((candidate) => candidate.page === page);
 }
 
-async function collectTextEvidence(handle: DocumentHandle, state: MutableRunState, pageLimit: number, guard: WorkGuard, stopAfterFirst: boolean): Promise<number[]> {
+async function collectTextEvidence(cursor: PageCursor, state: MutableRunState, pageLimit: number, guard: WorkGuard, stopAfterFirst: boolean): Promise<number[]> {
   const processedPages: number[] = [];
   for (let pageNumber = 1; pageNumber <= pageLimit; pageNumber += 1) {
     guard.check();
-    const pageResult = await withPage(handle, pageNumber, async (page) => {
+    const pageResult = await cursor.use(pageNumber, async (page) => {
       const nativeText = page.nativeText();
       if (nativeText === null) {
         return null;
@@ -208,7 +258,7 @@ async function collectTextEvidence(handle: DocumentHandle, state: MutableRunStat
   return processedPages;
 }
 
-async function collectBarcodeEvidence(handle: DocumentHandle, state: MutableRunState, pages: number[], recipes: RenderRecipe[], options: ResolvedOptions, guard: WorkGuard): Promise<void> {
+async function collectBarcodeEvidence(handle: DocumentHandle, cursor: PageCursor, state: MutableRunState, pages: number[], recipes: RenderRecipe[], options: ResolvedOptions, guard: WorkGuard, reuse: RenderReuse): Promise<void> {
   if (pages.length === 0 || recipes.length === 0) {
     return;
   }
@@ -223,7 +273,7 @@ async function collectBarcodeEvidence(handle: DocumentHandle, state: MutableRunS
     state.passesUsed = Math.max(state.passesUsed, passIndex + 1);
     for (const pageNumber of pages) {
       guard.check();
-      const candidates = await withPage(handle, pageNumber, async (page) => {
+      const candidates = await cursor.use(pageNumber, async (page) => {
         const rendered = await page.render(recipe, options.maxPixelsPerPage);
         state.renderAttempts += 1;
         state.renderedPages.add(pageNumber);
@@ -234,7 +284,7 @@ async function collectBarcodeEvidence(handle: DocumentHandle, state: MutableRunS
           });
           return decoded.flatMap((barcode) => findCandidatesInDecodedValue(barcode.text, pageNumber, barcode.source, passIndex + 1, rendered.mapBoundsToPage(barcode.bounds)));
         } finally {
-          rendered.dispose();
+          reuse.offer(pageNumber, recipe, rendered);
         }
       });
       guard.check();
@@ -330,7 +380,7 @@ async function digitRegionEvidence(session: OcrSession, image: Buffer, recogniti
   return uniquePageEvidence(evidence);
 }
 
-async function collectOcrEvidence(handle: DocumentHandle, state: MutableRunState, pages: number[], recipes: RenderRecipe[], options: ResolvedOptions, guard: WorkGuard): Promise<OcrSession | null> {
+async function collectOcrEvidence(handle: DocumentHandle, cursor: PageCursor, state: MutableRunState, pages: number[], recipes: RenderRecipe[], options: ResolvedOptions, guard: WorkGuard, reuse: RenderReuse): Promise<OcrSession | null> {
   if (options.ocr === "never") {
     return null;
   }
@@ -352,8 +402,8 @@ async function collectOcrEvidence(handle: DocumentHandle, state: MutableRunState
         guard.check();
         const pass = recipes.indexOf(recipe) + 1;
         state.passesUsed = Math.max(state.passesUsed, pass);
-        const pageResult = await withPage(handle, pageNumber, async (page) => {
-          const rendered = await page.render(recipe, options.maxPixelsPerPage);
+        const pageResult = await cursor.use(pageNumber, async (page) => {
+          const rendered = reuse.take(pageNumber, recipe) ?? (await page.render(recipe, options.maxPixelsPerPage));
           state.renderAttempts += 1;
           state.renderedPages.add(pageNumber);
           state.ocrPages.add(pageNumber);
@@ -386,12 +436,6 @@ async function collectOcrEvidence(handle: DocumentHandle, state: MutableRunState
   }
 }
 
-/**
- * Extracts validated cobrança and arrecadação boletos from one local path,
- * direct HTTP(S) URL, or in-memory PDF, JPEG, or PNG document.
- *
- * Expected input and processing failures resolve to a JSON-safe result.
- */
 export async function extractBoletos(input: DocumentInput, optionsInput: ExtractOptions = {}): Promise<ExtractionResult> {
   const startedAt = startTimer();
   let options: ResolvedOptions;
@@ -408,6 +452,8 @@ export async function extractBoletos(input: DocumentInput, optionsInput: Extract
   const guard = new WorkGuard(options, startedAt);
   let handle: DocumentHandle | null = null;
   let ocrSession: OcrSession | null = null;
+  let cursor: PageCursor | null = null;
+  let reuse: RenderReuse | null = null;
   let result: ExtractionResult;
 
   try {
@@ -430,12 +476,14 @@ export async function extractBoletos(input: DocumentInput, optionsInput: Extract
       state.warnings.push(`Only the first ${pageLimit} of ${state.pagesTotal} pages were processed because of maxPages.`);
     }
 
-    const processedPages = await collectTextEvidence(handle, state, pageLimit, guard, options.stopAfterFirst);
+    cursor = new PageCursor(handle);
+    const processedPages = await collectTextEvidence(cursor, state, pageLimit, guard, options.stopAfterFirst);
     if (!(options.stopAfterFirst && state.evidence.length > 0)) {
       const recipes = getRenderRecipes(options, handle.format);
-      await collectBarcodeEvidence(handle, state, processedPages, recipes, options, guard);
+      reuse = new RenderReuse(options.ocr === "never" ? null : (ocrRecipes(recipes, options, handle.format)[0] ?? null));
+      await collectBarcodeEvidence(handle, cursor, state, processedPages, recipes, options, guard, reuse);
       if (!(options.stopAfterFirst && state.evidence.length > 0)) {
-        ocrSession = await collectOcrEvidence(handle, state, processedPages, recipes, options, guard);
+        ocrSession = await collectOcrEvidence(handle, cursor, state, processedPages, recipes, options, guard, reuse);
       }
     }
 
@@ -459,6 +507,8 @@ export async function extractBoletos(input: DocumentInput, optionsInput: Extract
     });
   } finally {
     guard.dispose();
+    reuse?.dispose();
+    cursor?.release();
     await Promise.all([ocrSession?.terminate().catch(() => undefined), handle?.close().catch(() => undefined)]);
   }
   return finalizeResultDuration(result, startedAt);
@@ -557,10 +607,6 @@ function emptyBatchResult(message: string, inputsTotal: number, concurrency: num
   return result;
 }
 
-/**
- * Extracts boletos from an ordered batch. Inputs are processed with bounded
- * concurrency and are represented in the result only by their zero-based index.
- */
 export async function extractBoletoBatch(inputs: readonly BoletoBatchInput[], optionsInput: BatchExtractOptions = {}): Promise<BatchExtractionResult> {
   const startedAt = startTimer();
   if (!Array.isArray(inputs) || inputs.length === 0) {

@@ -333,10 +333,6 @@ function getArrecadacaoOrganizationFields(
   };
 }
 
-/**
- * Calculates a FEBRABAN modulo-10 check digit. Multipliers alternate between
- * 2 and 1 from right to left and two-digit products have their digits summed.
- */
 export function calculateModulo10CheckDigit(body: string): number {
   assertNumericBody(body);
 
@@ -352,10 +348,6 @@ export function calculateModulo10CheckDigit(body: string): number {
   return (10 - (sum % 10)) % 10;
 }
 
-/**
- * Calculates the general check digit for a cobrança barcode. The input is the
- * 43-digit barcode body with position 5 (the general check digit) removed.
- */
 export function calculateCobrancaBarcodeCheckDigit(body: string): number {
   assertNumericBody(body, 43);
 
@@ -371,10 +363,6 @@ export function calculateCobrancaBarcodeCheckDigit(body: string): number {
   return candidate < 2 || candidate > 9 ? 1 : candidate;
 }
 
-/**
- * Calculates a FEBRABAN arrecadação modulo-11 check digit. It is valid for
- * both 11-digit representation fields and the 43-digit general-DV body.
- */
 export function calculateArrecadacaoModulo11CheckDigit(body: string): number {
   assertNumericBody(body);
 
@@ -449,10 +437,6 @@ function formatNormalizedDigitableLine(line: string): string {
   throw new TypeError("Digitable line must contain 47 or 48 numeric characters.");
 }
 
-/**
- * Converts a supported barcode or digitable line to its canonical 44-digit
- * barcode. Formatting whitespace, dots, and hyphens are accepted.
- */
 export function toBarcode(value: string): string {
   const normalizedValue = normalizeBoletoCode(value);
   const shape = getCodeShape(normalizedValue);
@@ -468,10 +452,6 @@ export function toBarcode(value: string): string {
   return shape.layout === "cobranca" ? cobrancaLineToBarcode(normalizedValue) : arrecadacaoLineToBarcode(normalizedValue);
 }
 
-/**
- * Converts a supported code to a canonical, unformatted digitable line. Field
- * check digits are calculated when the input is a 44-digit barcode.
- */
 export function toDigitableLine(value: string): string {
   const normalizedValue = normalizeBoletoCode(value);
   const shape = getCodeShape(normalizedValue);
@@ -497,9 +477,6 @@ export function toDigitableLine(value: string): string {
   return arrecadacaoBarcodeToLine(normalizedValue, valueInfo.checkDigitAlgorithm);
 }
 
-/**
- * Formats a supported code as its canonical human-readable digitable line.
- */
 export function formatDigitableLine(value: string): string {
   return formatNormalizedDigitableLine(toDigitableLine(value));
 }
@@ -611,10 +588,6 @@ function parseArrecadacaoCode(normalizedValue: string, representation: BoletoRep
   };
 }
 
-/**
- * Parses the positional components of a structurally supported boleto code.
- * Semantic and check-digit issues are reported by validateBoletoCode.
- */
 export function parseBoletoCode(value: string): BoletoComponents {
   const normalizedValue = normalizeBoletoCode(value);
   const shape = getCodeShape(normalizedValue);
@@ -716,10 +689,6 @@ function appendArrecadacaoSemanticIssues(components: ArrecadacaoBoletoComponents
   }
 }
 
-/**
- * Validates format, FEBRABAN semantic identifiers, field check digits, and
- * the general check digit for cobrança and arrecadação codes.
- */
 export function validateBoletoCode(value: string): BoletoValidation {
   const normalizedValue = normalizeBoletoCode(value);
   const shape = getCodeShape(normalizedValue);

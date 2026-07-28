@@ -18,7 +18,6 @@ function normalizedBounds(x: number, y: number, width: number, height: number): 
   };
 }
 
-/** Converts bounds from a recipe-rotated canvas back to its unrotated page. */
 export function undoRecipeRotation(bounds: NormalizedBounds, rotation: RenderRecipe["rotation"]): NormalizedBounds {
   switch (rotation) {
     case 0:
@@ -32,7 +31,6 @@ export function undoRecipeRotation(bounds: NormalizedBounds, rotation: RenderRec
   }
 }
 
-/** Maps a raw-image rectangle into the EXIF-upright image coordinate space. */
 export function applyExifOrientationToBounds(bounds: NormalizedBounds, orientation: number): NormalizedBounds {
   switch (orientation) {
     case 2:

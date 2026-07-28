@@ -1,8 +1,3 @@
-/**
- * Names for the FEBRABAN institution codes most commonly seen issuing
- * cobrança boletos. The code is authoritative in the barcode, so a known
- * code resolves the institution without depending on printed labels.
- */
 const INSTITUTION_NAMES: Readonly<Record<string, string>> = {
   "001": "Banco do Brasil S.A.",
   "003": "Banco da Amazônia S.A.",

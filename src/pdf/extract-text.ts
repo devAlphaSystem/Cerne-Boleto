@@ -28,10 +28,6 @@ function isTextItem(value: unknown): value is PdfTextItemLike {
   return typeof value === "object" && value !== null && "str" in value && typeof value.str === "string";
 }
 
-/**
- * QR codes and barcodes drawn as rows of 0/1 glyphs in a machine font read
- * as page text but are not text; they corrupt visual-line reconstruction.
- */
 function isMachinePatternText(value: string): boolean {
   const compact = value.replace(/\s/gu, "");
   if (compact.length < 30) {

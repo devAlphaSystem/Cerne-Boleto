@@ -21,7 +21,6 @@ export interface ValidatedCandidateContext {
   source: CandidateSource;
   pass: number;
   nearLabel: boolean;
-  /** Numeric value to validate when rawValue contains corrected OCR glyphs. */
   normalizedValue?: string;
   bounds?: NormalizedBounds;
   ocrConfidence?: number;

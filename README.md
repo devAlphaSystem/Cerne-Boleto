@@ -117,7 +117,8 @@ no resultado. O envelope de lote acrescenta:
 `metadata` consolida páginas, bytes, renderizações e OCR de todas as entradas,
 além dos limites e da duração do lote. Nos resultados individuais,
 `inputFormat` informa `pdf`, `jpeg` ou `png`, e `renderAttempts` contabiliza
-cada superfície visual efetivamente criada. Para JPEG e PNG,
+cada renderização pedida pelo pipeline, inclusive as que reaproveitam uma
+superfície já pronta. Para JPEG e PNG,
 `sourceImageWidth` e `sourceImageHeight` registram as dimensões decodificadas
 originais; esses campos não aparecem no metadado agregado de um lote misto.
 

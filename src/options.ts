@@ -151,15 +151,10 @@ export function resolveOptions(options: ExtractOptions = {}): ResolvedOptions {
 export interface RenderRecipe {
   scale: number;
   rotation: 0 | 90 | 180 | 270;
-  /** Uses a conservative content crop, used only by image documents. */
   crop?: boolean;
-  /** Converts the rendered pixels to grayscale, used only by image documents. */
   grayscale?: boolean;
-  /** Applies a moderate deterministic contrast stretch, used only by image documents. */
   contrast?: boolean;
-  /** Allows a bounded enlargement of very small images. */
   upscale?: boolean;
-  /** Downscale-only pixel target which helps dotted thermal prints, used only by image documents. */
   targetPixels?: number;
 }
 
@@ -187,12 +182,6 @@ const RECIPES: Record<PerformanceProfile, readonly RenderRecipe[]> = {
   ],
 };
 
-/**
- * Image recipes use scale 1 as the natural (EXIF-oriented) image size. The
- * first pass always keeps the original pixels; later passes add a moderate
- * downscale that consolidates dotted thermal prints, a moderate contrast
- * stretch, and the discrete rotations photographs commonly need.
- */
 const IMAGE_RECIPES: Record<PerformanceProfile, readonly RenderRecipe[]> = {
   fast: [
     { scale: 1, rotation: 0 },

@@ -66,9 +66,7 @@ export interface OcrRecognition {
 }
 
 export interface OcrSession {
-  /** Full-page Portuguese OCR without a character whitelist. */
   recognize(image: Buffer): Promise<OcrRecognition>;
-  /** Digit-only retry, intentionally restricted to a caller-selected region. */
   recognizeDigits(image: Buffer, region: NormalizedBounds): Promise<OcrRecognition>;
   terminate(): Promise<void>;
 }
@@ -187,6 +185,7 @@ export async function createOcrSession(): Promise<OcrSession> {
     gzip: true,
   });
   let queue: Promise<void> = Promise.resolve();
+  let digitMode = false;
 
   function schedule<T>(work: () => Promise<T>): Promise<T> {
     const result = queue.then(work, work);
@@ -197,7 +196,20 @@ export async function createOcrSession(): Promise<OcrSession> {
     return result;
   }
 
+  async function useDigitMode(digits: boolean): Promise<void> {
+    if (digitMode === digits) {
+      return;
+    }
+    await worker.setParameters({
+      tessedit_char_whitelist: digits ? "0123456789" : "",
+      tessedit_pageseg_mode: digits ? PSM.SINGLE_BLOCK : PSM.SPARSE_TEXT,
+      preserve_interword_spaces: "1",
+    });
+    digitMode = digits;
+  }
+
   async function recognizeFull(image: Buffer): Promise<OcrRecognition> {
+    await useDigitMode(false);
     const result = await worker.recognize(image, {}, { text: true, blocks: true });
     return recognitionFromPage(result.data as TesseractPage, pngDimensions(image));
   }
@@ -226,21 +238,9 @@ export async function createOcrSession(): Promise<OcrSession> {
           throw new TypeError("Digit-region OCR requires a non-empty normalized region.");
         }
 
-        await worker.setParameters({
-          tessedit_char_whitelist: "0123456789",
-          tessedit_pageseg_mode: PSM.SINGLE_BLOCK,
-          preserve_interword_spaces: "1",
-        });
-        try {
-          const result = await worker.recognize(image, { rectangle: pixelRectangle(region, dimensions) }, { text: true, blocks: true });
-          return recognitionFromPage(result.data as TesseractPage, dimensions);
-        } finally {
-          await worker.setParameters({
-            tessedit_char_whitelist: "",
-            tessedit_pageseg_mode: PSM.SPARSE_TEXT,
-            preserve_interword_spaces: "1",
-          });
-        }
+        await useDigitMode(true);
+        const result = await worker.recognize(image, { rectangle: pixelRectangle(region, dimensions) }, { text: true, blocks: true });
+        return recognitionFromPage(result.data as TesseractPage, dimensions);
       });
     },
     terminate(): Promise<void> {

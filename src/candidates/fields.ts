@@ -288,10 +288,6 @@ function normalizeIdentifier(value: string): string | null {
   return /[0-9]/u.test(normalized) && normalized.length <= 30 ? normalized : null;
 }
 
-/**
- * Some documents draw QR codes and barcodes as rows of 0/1 glyphs in a
- * machine font. Those rows read as page text but are noise for field logic.
- */
 function isMachinePatternLine(text: string): boolean {
   const compact = text.replace(/\s/gu, "");
   if (compact.length < 30) {
@@ -429,10 +425,6 @@ const LABEL_RULES: readonly LabelRule[] = [
   },
 ] as const;
 
-/**
- * A party label frequently prints the CPF/CNPJ appended to the name. The
- * document is split into its own candidate so the party keeps both fields.
- */
 function partyNameAndTaxId(value: string): {
   name: string | null;
   taxId: { value: string; rawValue: string } | null;
@@ -484,13 +476,6 @@ function addressBlockHeadName(line: CandidateTextLine): string | null {
   return head;
 }
 
-/**
- * Contas de arrecadação print the issuer and the customer as unlabeled
- * name-plus-address blocks. A block is anchored by a CEP line; the topmost
- * left-aligned line above it names the party. Blocks containing a valid CNPJ
- * or a corporate suffix name the issuer; the others name the customer. These
- * candidates are heuristic: merging only uses them for arrecadação results.
- */
 function extractAddressBlockCandidates(lines: readonly CandidateTextLine[]): FieldCandidate[] {
   const output: FieldCandidate[] = [];
 
