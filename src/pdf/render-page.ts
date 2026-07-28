@@ -69,9 +69,9 @@ export async function renderPage(page: PdfPageLike, recipe: RenderRecipe, maxPix
       pixels ??= context.getImageData(0, 0, width, height).data;
       return pixels;
     },
-    toPng(): Buffer {
+    toPng(): Promise<Buffer> {
       assertAvailable();
-      return canvas.toBuffer("image/png");
+      return canvas.encode("png");
     },
     mapBoundsToPage(bounds) {
       return undoRecipeRotation(bounds, recipe.rotation);

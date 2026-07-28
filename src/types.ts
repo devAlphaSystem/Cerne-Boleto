@@ -105,6 +105,7 @@ export interface ExtractionMetadata {
   sourceImageHeight?: number;
   maxPixelsPerPage: number;
   maxSourceImagePixels: number;
+  /** Full elapsed API/CLI duration in milliseconds, measured with a monotonic high-resolution clock. */
   durationMs: number;
   complete: boolean;
   confidenceVersion: "1.2.0";
@@ -159,6 +160,7 @@ export interface BatchExtractionSummary {
   inputsFailed: number;
   boletosFound: number;
   concurrency: number;
+  /** Full elapsed batch duration in milliseconds. */
   durationMs: number;
 }
 

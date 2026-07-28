@@ -1,5 +1,3 @@
-import { performance } from "node:perf_hooks";
-
 import { extractFieldCandidates } from "./candidates/fields";
 import { findCandidatesInOcrText } from "./candidates/from-ocr";
 import { findCandidatesInDecodedValue, findCandidatesInPositionedText, findCandidatesInText } from "./candidates/from-text";
@@ -12,6 +10,7 @@ import { ExtractionFailure } from "./errors";
 import { getRenderRecipes, InvalidOptionsError, resolveOptions, type RenderRecipe, type ResolvedOptions } from "./options";
 import type { OcrRecognition, OcrSession } from "./recognition/ocr-reader";
 import { mergeEvidence } from "./scoring/merge-results";
+import { elapsedMilliseconds, startTimer, type MonotonicTimestamp } from "./timing";
 import type { BatchExtractOptions, BatchExtractionItem, BatchExtractionResult, BatchMatchedBoleto, BoletoBatchInput, DocumentFormat, DocumentInput, ExtractOptions, ExtractionErrorCode, ExtractionErrorInfo, ExtractionMetadata, ExtractionResult, ExtractionStatus } from "./types";
 
 interface MutableRunState {
@@ -57,7 +56,7 @@ function emptyState(): MutableRunState {
   };
 }
 
-function metadata(options: ResolvedOptions, state: MutableRunState, startedAt: number): ExtractionMetadata {
+function metadata(options: ResolvedOptions, state: MutableRunState, startedAt: MonotonicTimestamp): ExtractionMetadata {
   return {
     performance: options.performance,
     ocrMode: options.ocr,
@@ -74,13 +73,13 @@ function metadata(options: ResolvedOptions, state: MutableRunState, startedAt: n
     ...(state.sourceImageHeight === null ? {} : { sourceImageHeight: state.sourceImageHeight }),
     maxPixelsPerPage: options.maxPixelsPerPage,
     maxSourceImagePixels: options.maxSourceImagePixels,
-    durationMs: Number((performance.now() - startedAt).toFixed(2)),
+    durationMs: elapsedMilliseconds(startedAt),
     complete: state.complete,
     confidenceVersion: "1.2.0",
   };
 }
 
-function resultFromState(options: ResolvedOptions, state: MutableRunState, startedAt: number, error: ExtractionErrorInfo | null = null): ExtractionResult {
+function resultFromState(options: ResolvedOptions, state: MutableRunState, startedAt: MonotonicTimestamp, error: ExtractionErrorInfo | null = null): ExtractionResult {
   const merged = mergeEvidence(state.evidence, state.fields);
   let status: ExtractionStatus;
   if (error !== null) {
@@ -104,13 +103,18 @@ function resultFromState(options: ResolvedOptions, state: MutableRunState, start
   };
 }
 
-function failureResult(code: ExtractionErrorCode, message: string, options: ResolvedOptions = resolveOptions(), startedAt = performance.now()): ExtractionResult {
-  const state = emptyState();
-  state.complete = false;
-  return resultFromState(options, state, startedAt, { code, message });
+function finalizeResultDuration<T extends ExtractionResult>(result: T, startedAt: MonotonicTimestamp): T {
+  result.metadata.durationMs = elapsedMilliseconds(startedAt);
+  return result;
 }
 
-function invalidOptionsResult(error: InvalidOptionsError, startedAt: number): ExtractionResult {
+function failureResult(code: ExtractionErrorCode, message: string, options: ResolvedOptions = resolveOptions(), startedAt = startTimer()): ExtractionResult {
+  const state = emptyState();
+  state.complete = false;
+  return finalizeResultDuration(resultFromState(options, state, startedAt, { code, message }), startedAt);
+}
+
+function invalidOptionsResult(error: InvalidOptionsError, startedAt: MonotonicTimestamp): ExtractionResult {
   return failureResult("INVALID_OPTIONS", error.message, resolveOptions(), startedAt);
 }
 
@@ -224,7 +228,10 @@ async function collectBarcodeEvidence(handle: DocumentHandle, state: MutableRunS
         state.renderAttempts += 1;
         state.renderedPages.add(pageNumber);
         try {
-          const decoded = await readBarcodes(rendered, { photoEnhancements: handle.format !== "pdf" });
+          const decoded = await readBarcodes(rendered, {
+            photoEnhancements: handle.format !== "pdf",
+            checkpoint: () => guard.check(),
+          });
           return decoded.flatMap((barcode) => findCandidatesInDecodedValue(barcode.text, pageNumber, barcode.source, passIndex + 1, rendered.mapBoundsToPage(barcode.bounds)));
         } finally {
           rendered.dispose();
@@ -351,7 +358,8 @@ async function collectOcrEvidence(handle: DocumentHandle, state: MutableRunState
           state.renderedPages.add(pageNumber);
           state.ocrPages.add(pageNumber);
           try {
-            const image = rendered.toPng();
+            const image = await rendered.toPng();
+            guard.check();
             const recognized = await session.recognize(image);
             const candidates = uniquePageEvidence([...ocrLineEvidence(recognized, pageNumber, pass, rendered), ...findCandidatesInOcrText(recognized.text, pageNumber, pass, recognized.confidence)]);
             const retried = candidates.length === 0 ? await digitRegionEvidence(session, image, recognized, pageNumber, pass, rendered, guard) : [];
@@ -385,21 +393,22 @@ async function collectOcrEvidence(handle: DocumentHandle, state: MutableRunState
  * Expected input and processing failures resolve to a JSON-safe result.
  */
 export async function extractBoletos(input: DocumentInput, optionsInput: ExtractOptions = {}): Promise<ExtractionResult> {
-  const startedAt = performance.now();
+  const startedAt = startTimer();
   let options: ResolvedOptions;
   try {
     options = resolveOptions(optionsInput);
   } catch (error) {
     if (error instanceof InvalidOptionsError) {
-      return invalidOptionsResult(error, startedAt);
+      return finalizeResultDuration(invalidOptionsResult(error, startedAt), startedAt);
     }
-    return invalidOptionsResult(new InvalidOptionsError("Extraction options are invalid."), startedAt);
+    return finalizeResultDuration(invalidOptionsResult(new InvalidOptionsError("Extraction options are invalid."), startedAt), startedAt);
   }
 
   const state = emptyState();
   const guard = new WorkGuard(options, startedAt);
   let handle: DocumentHandle | null = null;
   let ocrSession: OcrSession | null = null;
+  let result: ExtractionResult;
 
   try {
     guard.check();
@@ -434,7 +443,7 @@ export async function extractBoletos(input: DocumentInput, optionsInput: Extract
     if (options.stopAfterFirst && state.evidence.length > 0) {
       state.complete = true;
     }
-    return resultFromState(options, state, startedAt);
+    result = resultFromState(options, state, startedAt);
   } catch (error) {
     state.complete = false;
     let resolvedError: unknown = error;
@@ -444,15 +453,15 @@ export async function extractBoletos(input: DocumentInput, optionsInput: Extract
       resolvedError = guardError;
     }
     const failure = resolvedError instanceof ExtractionFailure ? resolvedError : new ExtractionFailure("PROCESSING_ERROR", "The document could not be processed.", { cause: resolvedError });
-    return resultFromState(options, state, startedAt, {
+    result = resultFromState(options, state, startedAt, {
       code: failure.code,
       message: failure.message,
     });
   } finally {
     guard.dispose();
-    await ocrSession?.terminate().catch(() => undefined);
-    await handle?.close().catch(() => undefined);
+    await Promise.all([ocrSession?.terminate().catch(() => undefined), handle?.close().catch(() => undefined)]);
   }
+  return finalizeResultDuration(result, startedAt);
 }
 
 function isSimpleDocumentInput(value: unknown): value is DocumentInput {
@@ -496,7 +505,7 @@ function resolveBatchSource(value: BoletoBatchInput): ResolvedBatchSource {
   };
 }
 
-function batchMetadata(options: ResolvedOptions, items: BatchExtractionItem[], startedAt: number, complete: boolean): ExtractionMetadata {
+function batchMetadata(options: ResolvedOptions, items: BatchExtractionItem[], startedAt: MonotonicTimestamp, complete: boolean): ExtractionMetadata {
   return {
     performance: options.performance,
     ocrMode: options.ocr,
@@ -510,15 +519,15 @@ function batchMetadata(options: ResolvedOptions, items: BatchExtractionItem[], s
     fileSizeBytes: items.reduce((sum, item) => sum + item.result.metadata.fileSizeBytes, 0),
     maxPixelsPerPage: options.maxPixelsPerPage,
     maxSourceImagePixels: options.maxSourceImagePixels,
-    durationMs: Number((performance.now() - startedAt).toFixed(2)),
+    durationMs: elapsedMilliseconds(startedAt),
     complete,
     confidenceVersion: "1.2.0",
   };
 }
 
-function emptyBatchResult(message: string, inputsTotal: number, concurrency: number, startedAt: number): BatchExtractionResult {
+function emptyBatchResult(message: string, inputsTotal: number, concurrency: number, startedAt: MonotonicTimestamp): BatchExtractionResult {
   const options = resolveOptions();
-  return {
+  const result: BatchExtractionResult = {
     status: "error",
     success: false,
     precisionScore: 0,
@@ -534,7 +543,7 @@ function emptyBatchResult(message: string, inputsTotal: number, concurrency: num
       inputsFailed: inputsTotal,
       boletosFound: 0,
       concurrency,
-      durationMs: Number((performance.now() - startedAt).toFixed(2)),
+      durationMs: 0,
     },
     warnings: [],
     error: {
@@ -542,6 +551,10 @@ function emptyBatchResult(message: string, inputsTotal: number, concurrency: num
       message,
     },
   };
+  const durationMs = elapsedMilliseconds(startedAt);
+  result.metadata.durationMs = durationMs;
+  result.summary.durationMs = durationMs;
+  return result;
 }
 
 /**
@@ -549,7 +562,7 @@ function emptyBatchResult(message: string, inputsTotal: number, concurrency: num
  * concurrency and are represented in the result only by their zero-based index.
  */
 export async function extractBoletoBatch(inputs: readonly BoletoBatchInput[], optionsInput: BatchExtractOptions = {}): Promise<BatchExtractionResult> {
-  const startedAt = performance.now();
+  const startedAt = startTimer();
   if (!Array.isArray(inputs) || inputs.length === 0) {
     return emptyBatchResult("inputs must be a non-empty array.", Array.isArray(inputs) ? inputs.length : 0, 1, startedAt);
   }
@@ -654,10 +667,9 @@ export async function extractBoletoBatch(inputs: readonly BoletoBatchInput[], op
       return left.inputIndex - right.inputIndex;
     })[0] ?? null;
   const firstError = items.find((item) => item.result.error !== null)?.result.error ?? null;
-  const durationMs = Number((performance.now() - startedAt).toFixed(2));
   const complete = items.length === inputs.length && items.every((item) => item.result.metadata.complete);
 
-  return {
+  const result: BatchExtractionResult = {
     status,
     success: results.length > 0,
     precisionScore: Number(precisionScore.toFixed(3)),
@@ -673,9 +685,13 @@ export async function extractBoletoBatch(inputs: readonly BoletoBatchInput[], op
       inputsFailed,
       boletosFound: results.length,
       concurrency,
-      durationMs,
+      durationMs: 0,
     },
     warnings: items.flatMap((item) => item.result.warnings.map((warning) => `Input ${item.inputIndex}: ${warning}`)),
     error: firstError,
   };
+  const durationMs = elapsedMilliseconds(startedAt);
+  result.metadata.durationMs = durationMs;
+  result.summary.durationMs = durationMs;
+  return result;
 }

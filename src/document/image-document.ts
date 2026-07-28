@@ -320,9 +320,9 @@ function renderImage(canvasModule: CanvasModule, image: DecodedImage, fullWidth:
       pixels ??= context.getImageData(0, 0, width, height).data;
       return pixels;
     },
-    toPng(): Buffer {
+    toPng(): Promise<Buffer> {
       assertAvailable();
-      return canvas.toBuffer("image/png");
+      return canvas.encode("png");
     },
     mapBoundsToPage(bounds) {
       return placeBoundsWithin(undoRecipeRotation(bounds, recipe.rotation), uprightCropBounds);
@@ -363,7 +363,7 @@ export async function openImageDocument(data: Uint8Array, format: "jpeg" | "png"
   validateImageDimensions(width, height, maxSourceImagePixels);
 
   const fullImage = { x: 0, y: 0, width, height };
-  const contentCrop = computeContentCrop(canvasModule, image, width, height);
+  let contentCrop: SourceCrop | null | undefined;
   const page: DocumentPageLike = {
     pageNumber: 1,
     nativeText: () => null,
@@ -371,7 +371,10 @@ export async function openImageDocument(data: Uint8Array, format: "jpeg" | "png"
       if (image === null) {
         throw new ExtractionFailure("PROCESSING_ERROR", "The image document is already closed.");
       }
-      const crop = recipe.crop === true && contentCrop !== null ? contentCrop : fullImage;
+      if (recipe.crop === true && contentCrop === undefined) {
+        contentCrop = computeContentCrop(canvasModule, image, width, height);
+      }
+      const crop = recipe.crop === true && contentCrop !== undefined && contentCrop !== null ? contentCrop : fullImage;
       return Promise.resolve(renderImage(canvasModule, image, width, height, crop, probe.orientation, recipe, maxPixels));
     },
     cleanup: () => undefined,

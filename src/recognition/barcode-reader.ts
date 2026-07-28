@@ -1,4 +1,4 @@
-import type { BinaryBitmap, DecodeHintType, LuminanceSource, Reader, Result } from "@zxing/library";
+import type * as ZxingLibrary from "@zxing/library";
 
 import type { NormalizedBounds } from "../candidates/types";
 import type { RenderedPage } from "../document/types";
@@ -17,8 +17,33 @@ export interface DecodedBarcode {
 }
 
 export interface BarcodeReadOptions {
-  /** Enables bounded photo-specific blur and global-threshold attempts. */
+  /** Enables bounded photo-specific blur and inverted-source attempts. */
   photoEnhancements?: boolean;
+  /** Allows the caller to enforce cancellation/deadline checks between scan regions. */
+  checkpoint?: () => void;
+}
+
+interface BarcodeRuntime {
+  zxing: typeof ZxingLibrary;
+  hints: Map<ZxingLibrary.DecodeHintType, unknown>;
+}
+
+let barcodeRuntimePromise: Promise<BarcodeRuntime> | undefined;
+
+function loadBarcodeRuntime(): Promise<BarcodeRuntime> {
+  barcodeRuntimePromise ??= import("@zxing/library").then((imported) => {
+    const zxing = (imported as unknown as { default?: typeof imported }).default ?? imported;
+    const { BarcodeFormat, DecodeHintType } = zxing;
+    const hints = new Map<ZxingLibrary.DecodeHintType, unknown>();
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.ITF]);
+    hints.set(DecodeHintType.ALLOWED_LENGTHS, Int32Array.from([44]));
+    hints.set(DecodeHintType.TRY_HARDER, true);
+    return { zxing, hints };
+  }).catch((error: unknown) => {
+    barcodeRuntimePromise = undefined;
+    throw error;
+  });
+  return barcodeRuntimePromise;
 }
 
 function clamp01(value: number): number {
@@ -71,28 +96,38 @@ function scanRegions(width: number, height: number): PixelRegion[] {
  * into solid bars, which binarizes far more reliably in photographs.
  */
 function boxBlurLuminance(source: Uint8ClampedArray, width: number, height: number): Uint8ClampedArray {
-  const horizontal = new Float32Array(width * height);
-  const output = new Uint8ClampedArray(width * height);
+  const length = width * height;
+  const horizontal = new Uint16Array(length);
+  const output = new Uint8ClampedArray(length);
+  const lastColumn = width - 1;
   for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * width;
     for (let x = 0; x < width; x += 1) {
-      const left = source[y * width + Math.max(0, x - 1)] ?? 0;
-      const center = source[y * width + x] ?? 0;
-      const right = source[y * width + Math.min(width - 1, x + 1)] ?? 0;
-      horizontal[y * width + x] = (left + center + right) / 3;
+      const index = rowOffset + x;
+      const left = source[x === 0 ? index : index - 1] ?? 0;
+      const center = source[index] ?? 0;
+      const right = source[x === lastColumn ? index : index + 1] ?? 0;
+      horizontal[index] = left + center + right;
     }
   }
+
+  const lastRow = height - 1;
   for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * width;
+    const topOffset = y === 0 ? rowOffset : rowOffset - width;
+    const bottomOffset = y === lastRow ? rowOffset : rowOffset + width;
     for (let x = 0; x < width; x += 1) {
-      const top = horizontal[Math.max(0, y - 1) * width + x] ?? 0;
-      const center = horizontal[y * width + x] ?? 0;
-      const bottom = horizontal[Math.min(height - 1, y + 1) * width + x] ?? 0;
-      output[y * width + x] = (top + center + bottom) / 3;
+      const index = rowOffset + x;
+      const top = horizontal[topOffset + x] ?? 0;
+      const center = horizontal[index] ?? 0;
+      const bottom = horizontal[bottomOffset + x] ?? 0;
+      output[index] = (top + center + bottom) / 9;
     }
   }
   return output;
 }
 
-function decodeBitmap(reader: Reader, bitmap: BinaryBitmap, hints: Map<DecodeHintType, unknown>): Result | null {
+function decodeBitmap(reader: ZxingLibrary.Reader, bitmap: ZxingLibrary.BinaryBitmap, hints: Map<ZxingLibrary.DecodeHintType, unknown>): ZxingLibrary.Result | null {
   try {
     return reader.decode(bitmap, hints);
   } catch {
@@ -102,7 +137,7 @@ function decodeBitmap(reader: Reader, bitmap: BinaryBitmap, hints: Map<DecodeHin
   }
 }
 
-function resultBounds(result: Result, region: PixelRegion, pageWidth: number, pageHeight: number): NormalizedBounds {
+function resultBounds(result: ZxingLibrary.Result, region: PixelRegion, pageWidth: number, pageHeight: number): NormalizedBounds {
   const points = result.getResultPoints();
   if (points.length === 0) {
     return {
@@ -160,14 +195,10 @@ function mergeBounds(left: NormalizedBounds, right: NormalizedBounds): Normalize
 }
 
 export async function readBarcodes(rendered: RenderedPage, options: BarcodeReadOptions = {}): Promise<DecodedBarcode[]> {
-  const imported = await import("@zxing/library");
-  const zxing = (imported as unknown as { default?: typeof imported }).default ?? imported;
-  const { BarcodeFormat, BinaryBitmap, DecodeHintType, GlobalHistogramBinarizer, HybridBinarizer, ITFReader, InvertedLuminanceSource, RGBLuminanceSource } = zxing;
-  const hints = new Map<DecodeHintType, unknown>();
-  hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.ITF]);
-  hints.set(DecodeHintType.ALLOWED_LENGTHS, Int32Array.from([44]));
-  hints.set(DecodeHintType.TRY_HARDER, true);
+  const { zxing, hints } = await loadBarcodeRuntime();
+  const { BinaryBitmap, HybridBinarizer, ITFReader, InvertedLuminanceSource, RGBLuminanceSource } = zxing;
 
+  options.checkpoint?.();
   const pixels = rendered.getPixels();
   const luminance = new Uint8ClampedArray(rendered.width * rendered.height);
   for (let pixel = 0, rgba = 0; pixel < luminance.length; pixel += 1, rgba += 4) {
@@ -183,14 +214,16 @@ export async function readBarcodes(rendered: RenderedPage, options: BarcodeReadO
   const output: DecodedBarcode[] = [];
 
   for (const region of scanRegions(rendered.width, rendered.height)) {
-    let cropped: LuminanceSource;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    options.checkpoint?.();
+    let cropped: ZxingLibrary.LuminanceSource;
     try {
       cropped = pageSource.crop(region.left, region.top, region.width, region.height);
     } catch {
       continue;
     }
 
-    const sources: LuminanceSource[] = [cropped, new InvertedLuminanceSource(cropped)];
+    const sources: ZxingLibrary.LuminanceSource[] = [cropped, new InvertedLuminanceSource(cropped)];
     if (blurredSource !== null) {
       try {
         const croppedBlurred = blurredSource.crop(region.left, region.top, region.width, region.height);
@@ -200,8 +233,7 @@ export async function readBarcodes(rendered: RenderedPage, options: BarcodeReadO
       }
     }
     for (const source of sources) {
-      const adaptive = decodeBitmap(reader, new BinaryBitmap(new HybridBinarizer(source)), hints);
-      const result = adaptive ?? (options.photoEnhancements === true ? decodeBitmap(reader, new BinaryBitmap(new GlobalHistogramBinarizer(source)), hints) : null);
+      const result = decodeBitmap(reader, new BinaryBitmap(new HybridBinarizer(source)), hints);
       if (result === null || !/^[0-9]{44}$/u.test(result.getText())) {
         continue;
       }

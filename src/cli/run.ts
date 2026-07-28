@@ -1,5 +1,6 @@
 import { extractBoletoBatch, extractBoletos } from "../extractor";
-import type { BatchExtractOptions, ExtractOptions, ExtractionResult } from "../types";
+import { elapsedMilliseconds, startTimer, type MonotonicTimestamp } from "../timing";
+import type { BatchExtractOptions, BatchExtractionResult, ExtractOptions, ExtractionResult } from "../types";
 
 export interface CliIo {
   stdout: Pick<NodeJS.WriteStream, "write">;
@@ -144,7 +145,16 @@ function cliError(message: string): ExtractionResult {
   };
 }
 
+function finalizeCliDuration(result: ExtractionResult | BatchExtractionResult, startedAt: MonotonicTimestamp): void {
+  const durationMs = elapsedMilliseconds(startedAt);
+  result.metadata.durationMs = durationMs;
+  if ("summary" in result) {
+    result.summary.durationMs = durationMs;
+  }
+}
+
 export async function runCli(args: string[], io: CliIo = { stdout: process.stdout }): Promise<number> {
+  const startedAt = startTimer();
   try {
     const parsed = parseCliArguments(args);
     if ("name" in parsed) {
@@ -160,6 +170,7 @@ export async function runCli(args: string[], io: CliIo = { stdout: process.stdou
             concurrency: parsed.concurrency,
           } satisfies BatchExtractOptions);
 
+    finalizeCliDuration(result, startedAt);
     io.stdout.write(`${JSON.stringify(result, null, parsed.pretty ? 2 : undefined)}\n`);
     if (result.status === "success") {
       return 0;
@@ -167,7 +178,9 @@ export async function runCli(args: string[], io: CliIo = { stdout: process.stdou
     return result.status === "not_found" ? 2 : 1;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Invalid CLI arguments.";
-    io.stdout.write(`${JSON.stringify(cliError(message))}\n`);
+    const result = cliError(message);
+    finalizeCliDuration(result, startedAt);
+    io.stdout.write(`${JSON.stringify(result)}\n`);
     return 1;
   }
 }

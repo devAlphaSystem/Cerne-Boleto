@@ -35,7 +35,7 @@ export interface RenderedPage {
   appliedScale: number;
   rotation: number;
   getPixels(): Uint8ClampedArray;
-  toPng(): Buffer;
+  toPng(): Promise<Buffer>;
   /** Maps recognition coordinates back to the canonical untransformed page. */
   mapBoundsToPage(bounds: NormalizedBounds): NormalizedBounds;
   /** Releases the backing canvas and any cached pixel buffer. */
