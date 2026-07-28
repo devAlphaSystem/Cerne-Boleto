@@ -330,6 +330,16 @@ function renderImage(canvasModule: CanvasModule, image: DecodedImage, fullWidth:
   };
 }
 
+/**
+ * Opens a validated raster image as a single-page document handle for rendering.
+ *
+ * @param {Uint8Array} data - The encoded JPEG or PNG bytes to decode.
+ * @param {"jpeg"|"png"} format - The detected raster image format.
+ * @param {number} maxSourceImagePixels - The maximum allowed decoded pixel area.
+ * @returns {Promise<DocumentHandle>} Resolves with a single-page image document handle.
+ * @throws {ExtractionFailure} If the image is malformed, cannot be decoded, or exceeds resource limits.
+ * @throws {Error} If the native canvas module cannot be loaded.
+ */
 export async function openImageDocument(data: Uint8Array, format: "jpeg" | "png", maxSourceImagePixels: number): Promise<DocumentHandle> {
   const probe = probeImage(data, format);
   validateImageDimensions(probe.width, probe.height, maxSourceImagePixels);

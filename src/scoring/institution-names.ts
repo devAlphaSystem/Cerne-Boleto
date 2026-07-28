@@ -27,6 +27,12 @@ const INSTITUTION_NAMES: Readonly<Record<string, string>> = {
   "756": "Banco Cooperativo Sicoob S.A.",
 };
 
+/**
+ * Resolves a supported FEBRABAN bank code to the institution's display name.
+ *
+ * @param {string} code - The three-digit bank code to resolve.
+ * @returns {string|null} The institution name, or `null` when the code is not in the maintained catalog.
+ */
 export function institutionNameForBankCode(code: string): string | null {
   return INSTITUTION_NAMES[code] ?? null;
 }

@@ -577,6 +577,13 @@ function fieldSignature(candidate: FieldCandidate): string {
   return `${candidate.kind}:${role}:${candidate.value}:${candidate.page}:${candidate.source}:${candidate.pass}:${bounds}`;
 }
 
+/**
+ * Extracts normalized boleto fields from positioned text while deduplicating
+ * repeated label and layout matches.
+ *
+ * @param {ReadonlyArray<CandidateTextLine>} allLines - The positioned text lines from all extraction channels and passes.
+ * @returns {Array<FieldCandidate>} The unique normalized field candidates in rule-discovery order.
+ */
 export function extractFieldCandidates(allLines: readonly CandidateTextLine[]): FieldCandidate[] {
   const lines = allLines.filter((line) => !isMachinePatternLine(line.text));
   const output: FieldCandidate[] = [];

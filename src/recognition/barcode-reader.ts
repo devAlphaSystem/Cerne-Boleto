@@ -10,14 +10,43 @@ interface PixelRegion {
   height: number;
 }
 
+/**
+ * Represents a 44-digit ITF barcode decode and its location on the page.
+ */
 export interface DecodedBarcode {
+  /**
+   * Provides the decoded 44-digit barcode value.
+   */
   text: string;
+  /**
+   * Identifies the barcode symbology used to produce the value.
+   */
   source: "itf";
+  /**
+   * Locates the detected barcode within normalized page coordinates.
+   */
   bounds: NormalizedBounds;
 }
+/**
+ * Invokes caller-controlled cancellation or deadline checks during barcode scanning.
+ *
+ * @callback BarcodeCheckpoint
+ * @throws {Error} If the caller requires barcode scanning to stop.
+ */
 
+/**
+ * Defines optional behavior for an ITF barcode scan.
+ */
 export interface BarcodeReadOptions {
+  /**
+   * Indicates whether blurred photographic variants should supplement the original pixels.
+   */
   photoEnhancements?: boolean;
+  /**
+   * Provides a checkpoint invoked before and during scan-region processing.
+   *
+   * @type {BarcodeCheckpoint}
+   */
   checkpoint?: () => void;
 }
 
@@ -86,33 +115,38 @@ function scanRegions(width: number, height: number): PixelRegion[] {
 }
 
 function boxBlurLuminance(source: Uint8ClampedArray, width: number, height: number): Uint8ClampedArray {
-  const length = width * height;
-  const horizontal = new Uint16Array(length);
-  const output = new Uint8ClampedArray(length);
+  const output = new Uint8ClampedArray(width * height);
   const lastColumn = width - 1;
-  for (let y = 0; y < height; y += 1) {
+  const lastRow = height - 1;
+
+  function fillRow(row: Uint16Array, y: number): void {
     const rowOffset = y * width;
     for (let x = 0; x < width; x += 1) {
       const index = rowOffset + x;
-      const left = source[x === 0 ? index : index - 1]!;
-      const center = source[index]!;
-      const right = source[x === lastColumn ? index : index + 1]!;
-      horizontal[index] = left + center + right;
+      row[x] = source[x === 0 ? index : index - 1]! + source[index]! + source[x === lastColumn ? index : index + 1]!;
     }
   }
 
-  const lastRow = height - 1;
+  let previous = new Uint16Array(width);
+  let current = new Uint16Array(width);
+  let next = new Uint16Array(width);
+  fillRow(current, 0);
+  previous.set(current);
+
   for (let y = 0; y < height; y += 1) {
-    const rowOffset = y * width;
-    const topOffset = y === 0 ? rowOffset : rowOffset - width;
-    const bottomOffset = y === lastRow ? rowOffset : rowOffset + width;
-    for (let x = 0; x < width; x += 1) {
-      const index = rowOffset + x;
-      const top = horizontal[topOffset + x]!;
-      const center = horizontal[index]!;
-      const bottom = horizontal[bottomOffset + x]!;
-      output[index] = (top + center + bottom) / 9;
+    if (y < lastRow) {
+      fillRow(next, y + 1);
+    } else {
+      next.set(current);
     }
+    const rowOffset = y * width;
+    for (let x = 0; x < width; x += 1) {
+      output[rowOffset + x] = (previous[x]! + current[x]! + next[x]!) / 9;
+    }
+    const spent = previous;
+    previous = current;
+    current = next;
+    next = spent;
   }
   return output;
 }
@@ -187,6 +221,14 @@ function mergeBounds(left: NormalizedBounds, right: NormalizedBounds): Normalize
   };
 }
 
+/**
+ * Decodes unique 44-digit ITF barcodes from prioritized regions of a rendered page.
+ *
+ * @param {RenderedPage} rendered - The rendered page whose pixels should be scanned.
+ * @param {BarcodeReadOptions} [options={}] - Optional photographic and checkpoint behavior.
+ * @returns {Promise<Array<DecodedBarcode>>} Resolves with spatially ordered, deduplicated barcode detections.
+ * @throws {Error} If the barcode runtime, rendered pixels, or caller checkpoint fails.
+ */
 export async function readBarcodes(rendered: RenderedPage, options: BarcodeReadOptions = {}): Promise<DecodedBarcode[]> {
   const { zxing, hints } = await loadBarcodeRuntime();
   const { BinaryBitmap, HybridBinarizer, ITFReader, InvertedLuminanceSource, RGBLuminanceSource } = zxing;

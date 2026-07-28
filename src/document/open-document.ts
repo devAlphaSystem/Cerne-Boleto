@@ -19,6 +19,16 @@ function pdfPageAdapter(page: PdfPageLike): DocumentPageLike {
   };
 }
 
+/**
+ * Opens validated input through the PDF or raster adapter behind a shared handle.
+ *
+ * @param {LoadedInput} loaded - The validated document bytes and detected format.
+ * @param {number} maxSourceImagePixels - The maximum decoded source-image pixel area.
+ * @param {number} maxCanvasPixels - The maximum PDF canvas allocation in pixels.
+ * @returns {Promise<DocumentHandle>} Resolves with a format-independent document handle.
+ * @throws {ExtractionFailure} If the document is invalid, protected, or exceeds resource limits.
+ * @throws {Error} If a PDF or native canvas dependency cannot open the document.
+ */
 export async function openDocument(loaded: LoadedInput, maxSourceImagePixels: number, maxCanvasPixels: number): Promise<DocumentHandle> {
   if (loaded.format === "pdf") {
     const handle = await openPdfDocument(loaded.data, maxSourceImagePixels, maxCanvasPixels);

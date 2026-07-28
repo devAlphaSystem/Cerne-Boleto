@@ -4,26 +4,49 @@ import type { CandidateEvidence, CandidateSource, NormalizedBounds } from "./typ
 const SEPARATOR_PATTERN = /[\t \u00a0.\-_/]/u;
 const LABEL_PATTERN = /(?:LINHA\s+DIGITAVEL|CODIGO\s+DE\s+BARRAS|REPRESENTACAO\s+NUMERICA|BOLETO)/u;
 
+/**
+ * Configures provenance and positioning for candidates parsed from text.
+ */
 export interface TextCandidateOptions {
+  /** Selects the text extraction channel, defaulting to native PDF text. */
   source?: Exclude<CandidateSource, "itf">;
+  /** Identifies pass zero for native text or a 1-based rendered recognition pass, defaulting to zero. */
   pass?: number;
+  /** Applies a shared page-relative region to every candidate in the text. */
   bounds?: NormalizedBounds;
+  /** Overrides automatic detection of nearby boleto labels. */
   nearLabel?: boolean;
 }
 
+/**
+ * Associates a candidate-bearing text line with its page-relative position.
+ */
 export interface PositionedCandidateLine {
+  /** Stores the text content to inspect for boleto representations. */
   text: string;
+  /** Locates the line relative to the page dimensions. */
   bounds: NormalizedBounds;
 }
 
+/**
+ * Supplies provenance and optional OCR metadata for validated boleto evidence.
+ */
 export interface ValidatedCandidateContext {
+  /** Identifies the 1-based page that contains the candidate. */
   page: number;
+  /** Identifies the extraction channel that produced the candidate. */
   source: CandidateSource;
+  /** Identifies pass zero for native text or the 1-based rendered recognition pass. */
   pass: number;
+  /** Controls whether the candidate is marked as having nearby label context. */
   nearLabel: boolean;
+  /** Supplies an already-normalized numeric value when it differs from the raw text. */
   normalizedValue?: string;
+  /** Locates the candidate relative to the page dimensions. */
   bounds?: NormalizedBounds;
+  /** Records OCR confidence on a scale from zero to 100. */
   ocrConfidence?: number;
+  /** Records how many OCR character substitutions produced the normalized value. */
   corrections?: number;
 }
 
@@ -83,6 +106,21 @@ function numericClusters(text: string): Array<{ rawValues: string[]; start: numb
   return output;
 }
 
+/**
+ * Validates a raw boleto representation and attaches its extraction provenance.
+ *
+ * @param {string} rawValue - The source text or decoded barcode value to validate.
+ * @param {ValidatedCandidateContext} context - The page, source, pass, and optional positional metadata.
+ * @returns {CandidateEvidence|null} The normalized evidence, or `null` when the value is not a valid boleto representation.
+ *
+ * @example
+ * const candidate = createValidatedCandidate(decodedValue, {
+ *   page: 1,
+ *   source: "itf",
+ *   pass: 1,
+ *   nearLabel: true,
+ * });
+ */
 export function createValidatedCandidate(rawValue: string, context: ValidatedCandidateContext): CandidateEvidence | null {
   const numericValue = context.normalizedValue ?? rawValue.replace(/[^0-9]/gu, "");
   const validation = validateBoletoCode(numericValue);
@@ -111,6 +149,21 @@ function candidateSignature(candidate: CandidateEvidence): string {
   return `${candidate.barcode}:${candidate.source}:${candidate.pass}:${bounds}`;
 }
 
+/**
+ * Finds unique, validated boleto representations embedded in unpositioned text.
+ *
+ * @param {string} text - The document text to scan for numeric representations.
+ * @param {number} page - The 1-based page associated with the text.
+ * @param {TextCandidateOptions} [options={}] - Provenance and positioning overrides for the discovered candidates.
+ * @returns {Array<CandidateEvidence>} The validated candidates in discovery order.
+ *
+ * @example
+ * const candidates = findCandidatesInText(pageText, 1, {
+ *   source: "pdf-text",
+ *   pass: 0,
+ *   nearLabel: true,
+ * });
+ */
 export function findCandidatesInText(text: string, page: number, options: TextCandidateOptions = {}): CandidateEvidence[] {
   const normalized = normalizedText(text);
   const output: CandidateEvidence[] = [];
@@ -143,6 +196,14 @@ export function findCandidatesInText(text: string, page: number, options: TextCa
   return output;
 }
 
+/**
+ * Finds validated boleto representations while preserving each line's bounds.
+ *
+ * @param {ReadonlyArray<PositionedCandidateLine>} lines - The positioned text lines to scan.
+ * @param {number} page - The 1-based page associated with the lines.
+ * @param {"pdf-text"|"pdf-text-reconstructed"} [source="pdf-text-reconstructed"] - The text extraction channel to record.
+ * @returns {Array<CandidateEvidence>} The validated candidates with their source-line bounds.
+ */
 export function findCandidatesInPositionedText(lines: readonly PositionedCandidateLine[], page: number, source: Extract<CandidateSource, "pdf-text" | "pdf-text-reconstructed"> = "pdf-text-reconstructed"): CandidateEvidence[] {
   return lines.flatMap((line) =>
     findCandidatesInText(line.text, page, {
@@ -152,6 +213,16 @@ export function findCandidatesInPositionedText(lines: readonly PositionedCandida
   );
 }
 
+/**
+ * Validates a decoded ITF value and records its barcode extraction context.
+ *
+ * @param {string} value - The decoded numeric barcode value.
+ * @param {number} page - The 1-based page that contains the barcode.
+ * @param {"itf"} source - The barcode extraction channel.
+ * @param {number} pass - The 1-based rendered barcode pass that produced the value.
+ * @param {NormalizedBounds} [bounds] - The optional page-relative barcode bounds.
+ * @returns {Array<CandidateEvidence>} A single validated candidate, or an empty array when validation fails.
+ */
 export function findCandidatesInDecodedValue(value: string, page: number, source: "itf", pass: number, bounds?: NormalizedBounds): CandidateEvidence[] {
   const candidate = createValidatedCandidate(value, {
     page,

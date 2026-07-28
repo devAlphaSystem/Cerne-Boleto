@@ -24,8 +24,17 @@ interface VisibleResolution {
   discardedMinority: boolean;
 }
 
+/**
+ * Represents validated boleto results together with non-fatal evidence conflicts.
+ */
 export interface MergeEvidenceResult {
+  /**
+   * Lists the validated boletos ordered by confidence and first page.
+   */
   results: ExtractedBoleto[];
+  /**
+   * Lists deduplicated warnings produced while reconciling visible and encoded fields.
+   */
   warnings: string[];
 }
 
@@ -487,6 +496,13 @@ function generalInfo(
   };
 }
 
+/**
+ * Merges validated code evidence with nearby visible fields into stable boleto results.
+ *
+ * @param {Array<CandidateEvidence>} evidence - The barcode, text, and OCR candidates to consolidate.
+ * @param {Array<FieldCandidate>} fieldCandidates - The visible field candidates to associate with boleto codes.
+ * @returns {MergeEvidenceResult} The confidence-ranked boleto results and any reconciliation warnings.
+ */
 export function mergeEvidence(evidence: CandidateEvidence[], fieldCandidates: FieldCandidate[]): MergeEvidenceResult {
   const grouped = new Map<string, CandidateEvidence[]>();
   for (const item of evidence) {

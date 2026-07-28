@@ -8,6 +8,13 @@ const ISPB_INSTITUTION_CODE = "988";
 const ISPB_CURRENCY_CODE = "0";
 const REAL_CURRENCY_CODE = "9";
 
+/**
+ * Defines the stable issue codes returned when boleto validation fails.
+ *
+ * @enum {string}
+ * @readonly
+ * @since 0.1.0
+ */
 export const BOLETO_ISSUE_CODES = {
   INVALID_FORMAT: "INVALID_FORMAT",
   INVALID_PRODUCT: "INVALID_PRODUCT",
@@ -21,108 +28,263 @@ export const BOLETO_ISSUE_CODES = {
   INVALID_GENERAL_CHECK_DIGIT: "INVALID_GENERAL_CHECK_DIGIT",
 } as const;
 
+/**
+ * Identifies a stable boleto validation issue.
+ *
+ * @since 0.1.0
+ */
 export type BoletoIssueCode = (typeof BOLETO_ISSUE_CODES)[keyof typeof BOLETO_ISSUE_CODES];
 
+/**
+ * Identifies the cobrança or arrecadação layout of a boleto representation.
+ *
+ * @since 0.1.0
+ */
 export type BoletoLayout = "cobranca" | "arrecadacao";
 
+/**
+ * Identifies whether a boleto value is a barcode or a digitable line.
+ *
+ * @since 0.1.0
+ */
 export type BoletoRepresentation = "barcode" | "digitable-line";
 
+/**
+ * Identifies whether a cobrança boleto uses a bank code or an ISPB identifier.
+ *
+ * @since 0.1.0
+ */
 export type CobrancaVariant = "bank-code" | "ispb";
 
+/**
+ * Identifies the assumption used to resolve an ambiguous cobrança due-date factor.
+ *
+ * @since 0.1.0
+ */
 export type CobrancaDueDateAssumption = "2025-reset-cycle";
 
+/**
+ * Identifies the check-digit algorithm selected by an arrecadação value identifier.
+ *
+ * @since 0.1.0
+ */
 export type ArrecadacaoCheckDigitAlgorithm = "modulo10" | "modulo11";
 
+/**
+ * Identifies whether an arrecadação value field contains an amount or a reference.
+ *
+ * @since 0.1.0
+ */
 export type ArrecadacaoValueType = "amount" | "reference";
 
+/**
+ * Identifies a supported FEBRABAN arrecadação segment digit.
+ *
+ * @since 0.1.0
+ */
 export type ArrecadacaoSegmentCode = "1" | "2" | "3" | "4" | "5" | "6" | "7" | "9";
 
+/**
+ * Identifies the normalized service category of an arrecadação segment.
+ *
+ * @since 0.1.0
+ */
 export type ArrecadacaoSegmentName = "city-government" | "sanitation" | "energy-and-gas" | "telecommunications" | "government-agencies" | "payment-slips-and-similar" | "traffic-fines" | "bank-exclusive";
 
+/**
+ * Identifies how an arrecadação organization field should be interpreted.
+ *
+ * @since 0.1.0
+ */
 export type ArrecadacaoOrganizationIdentifierType = "febraban-code" | "cnpj-root" | "bank-code";
 
+/**
+ * Represents the three field check digits carried by a cobrança digitable line.
+ *
+ * @since 0.1.0
+ */
 export type CobrancaFieldCheckDigits = readonly [number, number, number];
 
+/**
+ * Represents the four field check digits carried by an arrecadação digitable line.
+ *
+ * @since 0.1.0
+ */
 export type ArrecadacaoFieldCheckDigits = readonly [number, number, number, number];
 
+/**
+ * Represents the field check digits for either supported boleto layout.
+ *
+ * @since 0.1.0
+ */
 export type BoletoFieldCheckDigits = CobrancaFieldCheckDigits | ArrecadacaoFieldCheckDigits;
 
+/**
+ * Identifies the general or field-level check digit associated with an issue.
+ *
+ * @since 0.1.0
+ */
 export type BoletoCheckDigitField = "general" | "field-1" | "field-2" | "field-3" | "field-4";
 
+/**
+ * Describes one structural, semantic, or check-digit problem found during validation.
+ *
+ * @since 0.1.0
+ */
 export interface BoletoIssue {
+  /** Identifies the stable category of the validation problem. */
   code: BoletoIssueCode;
+  /** Explains the problem in caller-readable terms. */
   message: string;
+  /** Identifies the affected check-digit field when the issue concerns a check digit. */
   field?: BoletoCheckDigitField;
+  /** Reports the value present in the supplied boleto representation when applicable. */
   actual?: string | number;
+  /** Reports the value required by the applicable rule when it can be calculated. */
   expected?: string | number;
 }
 
 interface BoletoComponentsBase {
+  /** Contains the input after supported presentation separators are removed. */
   normalizedValue: string;
+  /** Identifies the boleto layout inferred from the normalized length and prefix. */
   layout: BoletoLayout;
+  /** Identifies the representation supplied by the caller. */
   representation: BoletoRepresentation;
+  /** Contains the canonical 44-digit barcode representation. */
   barcode: string;
+  /** Contains the canonical unformatted line when the layout supplies enough information to derive it. */
   digitableLine: string | null;
+  /** Contains the canonical human-readable line when a digitable line can be derived. */
   formattedDigitableLine: string | null;
+  /** Reports the general check digit carried by the barcode. */
   generalCheckDigit: number;
+  /** Reports the calculated general check digit when the selected layout rules support it. */
   expectedGeneralCheckDigit: number | null;
+  /** Reports field check digits carried by a supplied digitable line. */
   fieldCheckDigits: BoletoFieldCheckDigits | null;
+  /** Reports field check digits calculated from the canonical barcode when possible. */
   expectedFieldCheckDigits: BoletoFieldCheckDigits | null;
 }
 
+/**
+ * Represents the structured fields parsed from a cobrança barcode or digitable line.
+ *
+ * @since 0.1.0
+ */
 export interface CobrancaBoletoComponents extends BoletoComponentsBase {
+  /** Fixes the discriminated layout to cobrança. */
   layout: "cobranca";
+  /** Contains the canonical unformatted 47-digit cobrança line. */
   digitableLine: string;
+  /** Contains the canonical human-readable cobrança line. */
   formattedDigitableLine: string;
+  /** Reports the three field check digits when the supplied representation is a digitable line. */
   fieldCheckDigits: CobrancaFieldCheckDigits | null;
+  /** Reports the three field check digits calculated from the barcode. */
   expectedFieldCheckDigits: CobrancaFieldCheckDigits;
+  /** Reports the general check digit calculated from the 43-digit barcode body. */
   expectedGeneralCheckDigit: number;
+  /** Identifies whether the leading fields represent a bank code or an ISPB. */
   variant: CobrancaVariant;
+  /** Contains the three-digit institution code. */
   institutionCode: string;
+  /** Contains the one-digit currency or ISPB configuration code. */
   currencyCode: string;
+  /** Contains the eight-digit ISPB for the ISPB variant, otherwise `null`. */
   ispb: string | null;
+  /** Contains the complete 14-digit ISPB field for the ISPB variant, otherwise `null`. */
   ispbField: string | null;
+  /** Contains the four-digit due-date factor for the bank-code variant, otherwise `null`. */
   dueDateFactor: string | null;
+  /** Contains the selected due date in `YYYY-MM-DD` form, or `null` when no date is encoded. */
   dueDate: string | null;
+  /** Lists every calendar date compatible with the encoded due-date factor. */
   dueDateCandidates: readonly string[];
+  /** Identifies the assumption used when the due-date factor spans more than one valid cycle. */
   dueDateAssumption: CobrancaDueDateAssumption | null;
+  /** Contains the ten-digit encoded amount field for the bank-code variant, otherwise `null`. */
   amountField: string | null;
+  /** Contains the encoded amount in cents without insignificant leading zeroes, otherwise `null`. */
   amountCents: string | null;
+  /** Contains the 25-digit cobrança free field. */
   freeField: string;
 }
 
+/**
+ * Represents the structured fields parsed from an arrecadação barcode or digitable line.
+ *
+ * @since 0.1.0
+ */
 export interface ArrecadacaoBoletoComponents extends BoletoComponentsBase {
+  /** Fixes the discriminated layout to arrecadação. */
   layout: "arrecadacao";
+  /** Reports the four field check digits when the supplied representation is a digitable line. */
   fieldCheckDigits: ArrecadacaoFieldCheckDigits | null;
+  /** Reports the four calculated field check digits when the value identifier is supported. */
   expectedFieldCheckDigits: ArrecadacaoFieldCheckDigits | null;
+  /** Contains the one-digit product identifier, which must be `8` for a valid arrecadação boleto. */
   productCode: string;
+  /** Contains the one-digit service segment identifier. */
   segmentCode: string;
+  /** Identifies the normalized service category, or `null` for an unsupported segment. */
   segmentName: ArrecadacaoSegmentName | null;
+  /** Contains the digit that selects value semantics and the check-digit algorithm. */
   valueIdentifier: string;
+  /** Identifies whether the value field is an amount or a reference, or `null` when unsupported. */
   valueType: ArrecadacaoValueType | null;
+  /** Identifies the selected check-digit algorithm, or `null` when unsupported. */
   checkDigitAlgorithm: ArrecadacaoCheckDigitAlgorithm | null;
+  /** Contains the 11-digit encoded amount or reference field. */
   valueField: string;
+  /** Contains the encoded amount in cents without insignificant leading zeroes when applicable. */
   amountCents: string | null;
+  /** Contains the encoded reference value when the value field is not monetary. */
   referenceValue: string | null;
+  /** Contains the organization identifier extracted according to the segment rules. */
   organizationIdentifier: string;
+  /** Identifies how to interpret `organizationIdentifier`, or `null` for an unsupported segment. */
   organizationIdentifierType: ArrecadacaoOrganizationIdentifierType | null;
+  /** Contains the remaining segment-dependent free field after the organization identifier. */
   freeField: string;
+  /** Contains a leading free-field date in `YYYY-MM-DD` form when it is a valid calendar date. */
   dueDate: string | null;
 }
 
+/**
+ * Represents parsed components for either supported boleto layout.
+ *
+ * @since 0.1.0
+ */
 export type BoletoComponents = CobrancaBoletoComponents | ArrecadacaoBoletoComponents;
 
+/**
+ * Reports normalization, parsed components, expected digits, and every detected validation issue.
+ *
+ * @since 0.1.0
+ */
 export interface BoletoValidation {
+  /** Indicates whether the representation passed every supported structural, semantic, and check-digit rule. */
   isValid: boolean;
+  /** Contains the input after supported presentation separators are removed. */
   normalizedValue: string;
+  /** Identifies the inferred layout, or `null` when the input shape is unsupported. */
   layout: BoletoLayout | null;
+  /** Identifies the supplied representation, or `null` when the input shape is unsupported. */
   representation: BoletoRepresentation | null;
+  /** Contains the canonical 44-digit barcode, or `null` when the input shape is unsupported. */
   barcode: string | null;
+  /** Contains the canonical unformatted line when it can be derived. */
   digitableLine: string | null;
+  /** Contains the canonical human-readable line when it can be derived. */
   formattedDigitableLine: string | null;
+  /** Contains parsed layout fields, or `null` when the input shape is unsupported. */
   components: BoletoComponents | null;
+  /** Reports the calculated general check digit when the selected layout rules support it. */
   expectedGeneralCheckDigit: number | null;
+  /** Reports calculated field check digits when the selected layout rules support them. */
   expectedFieldCheckDigits: BoletoFieldCheckDigits | null;
+  /** Lists every structural, semantic, and check-digit issue found in the representation. */
   issues: BoletoIssue[];
 }
 
@@ -333,6 +495,17 @@ function getArrecadacaoOrganizationFields(
   };
 }
 
+/**
+ * Calculates the FEBRABAN modulo-10 check digit for a non-empty numeric body.
+ *
+ * @param {string} body - Contains the numeric characters that precede the check digit.
+ * @returns {number} Returns the calculated digit from zero through nine.
+ * @throws {TypeError} If `body` is not a non-empty numeric string.
+ * @since 0.1.0
+ *
+ * @example
+ * const digit = calculateModulo10CheckDigit("001905009");
+ */
 export function calculateModulo10CheckDigit(body: string): number {
   assertNumericBody(body);
 
@@ -348,6 +521,17 @@ export function calculateModulo10CheckDigit(body: string): number {
   return (10 - (sum % 10)) % 10;
 }
 
+/**
+ * Calculates the general modulo-11 check digit for a 43-digit cobrança barcode body.
+ *
+ * @param {string} body - Contains the numeric barcode with the general check-digit position removed.
+ * @returns {number} Returns the calculated general check digit from one through nine.
+ * @throws {TypeError} If `body` does not contain exactly 43 numeric characters.
+ * @since 0.1.0
+ *
+ * @example
+ * const digit = calculateCobrancaBarcodeCheckDigit("0019373700000001000500940144816060680935031");
+ */
 export function calculateCobrancaBarcodeCheckDigit(body: string): number {
   assertNumericBody(body, 43);
 
@@ -363,6 +547,17 @@ export function calculateCobrancaBarcodeCheckDigit(body: string): number {
   return candidate < 2 || candidate > 9 ? 1 : candidate;
 }
 
+/**
+ * Calculates the FEBRABAN arrecadação modulo-11 check digit for a numeric field or general-DV body.
+ *
+ * @param {string} body - Contains the non-empty numeric body used for the check-digit calculation.
+ * @returns {number} Returns the calculated digit from zero through nine.
+ * @throws {TypeError} If `body` is not a non-empty numeric string.
+ * @since 0.1.0
+ *
+ * @example
+ * const digit = calculateArrecadacaoModulo11CheckDigit("12345678901");
+ */
 export function calculateArrecadacaoModulo11CheckDigit(body: string): number {
   assertNumericBody(body);
 
@@ -437,6 +632,17 @@ function formatNormalizedDigitableLine(line: string): string {
   throw new TypeError("Digitable line must contain 47 or 48 numeric characters.");
 }
 
+/**
+ * Converts a supported boleto representation to its canonical 44-digit barcode.
+ *
+ * @param {string} value - Contains a 44-, 47-, or 48-digit boleto with optional whitespace, dots, or hyphens.
+ * @returns {string} Returns the canonical unformatted 44-digit barcode.
+ * @throws {TypeError} If `value` is not a supported numeric boleto representation.
+ * @since 0.1.0
+ *
+ * @example
+ * const barcode = toBarcode("00190.50095 40144.816069 06809.350314 3 37370000000100");
+ */
 export function toBarcode(value: string): string {
   const normalizedValue = normalizeBoletoCode(value);
   const shape = getCodeShape(normalizedValue);
@@ -452,6 +658,17 @@ export function toBarcode(value: string): string {
   return shape.layout === "cobranca" ? cobrancaLineToBarcode(normalizedValue) : arrecadacaoLineToBarcode(normalizedValue);
 }
 
+/**
+ * Converts a supported boleto representation to its canonical unformatted digitable line.
+ *
+ * @param {string} value - Contains a 44-, 47-, or 48-digit boleto with optional whitespace, dots, or hyphens.
+ * @returns {string} Returns a 47-digit cobrança line or a 48-digit arrecadação line.
+ * @throws {TypeError} If `value` is not a supported numeric boleto representation or an arrecadação barcode uses an unsupported value identifier.
+ * @since 0.1.0
+ *
+ * @example
+ * const line = toDigitableLine("00193373700000001000500940144816060680935031");
+ */
 export function toDigitableLine(value: string): string {
   const normalizedValue = normalizeBoletoCode(value);
   const shape = getCodeShape(normalizedValue);
@@ -477,6 +694,17 @@ export function toDigitableLine(value: string): string {
   return arrecadacaoBarcodeToLine(normalizedValue, valueInfo.checkDigitAlgorithm);
 }
 
+/**
+ * Formats a supported boleto representation as its canonical human-readable digitable line.
+ *
+ * @param {string} value - Contains a 44-, 47-, or 48-digit boleto with optional whitespace, dots, or hyphens.
+ * @returns {string} Returns the canonical spaced and punctuated digitable line.
+ * @throws {TypeError} If `value` is not a supported numeric boleto representation or an arrecadação barcode uses an unsupported value identifier.
+ * @since 0.1.0
+ *
+ * @example
+ * const formatted = formatDigitableLine("00193373700000001000500940144816060680935031");
+ */
 export function formatDigitableLine(value: string): string {
   return formatNormalizedDigitableLine(toDigitableLine(value));
 }
@@ -588,6 +816,18 @@ function parseArrecadacaoCode(normalizedValue: string, representation: BoletoRep
   };
 }
 
+/**
+ * Parses a structurally supported boleto representation without deciding whether its check digits are valid.
+ *
+ * @param {string} value - Contains a 44-, 47-, or 48-digit boleto with optional whitespace, dots, or hyphens.
+ * @returns {BoletoComponents} Returns layout-specific encoded fields and calculated check-digit expectations.
+ * @throws {TypeError} If `value` is not a supported numeric boleto representation.
+ * @since 0.1.0
+ *
+ * @example
+ * const components = parseBoletoCode("00193373700000001000500940144816060680935031");
+ * console.log(components.layout);
+ */
 export function parseBoletoCode(value: string): BoletoComponents {
   const normalizedValue = normalizeBoletoCode(value);
   const shape = getCodeShape(normalizedValue);
@@ -689,6 +929,19 @@ function appendArrecadacaoSemanticIssues(components: ArrecadacaoBoletoComponents
   }
 }
 
+/**
+ * Validates a boleto representation and reports normalized values, parsed components, and every detected issue.
+ *
+ * @param {string} value - Contains a boleto barcode or digitable line with optional whitespace, dots, or hyphens.
+ * @returns {BoletoValidation} Returns a structured result instead of throwing for invalid boleto content.
+ * @since 0.1.0
+ *
+ * @example
+ * const validation = validateBoletoCode("00190.50095 40144.816069 06809.350314 3 37370000000100");
+ * if (validation.isValid) {
+ *   console.log(validation.barcode);
+ * }
+ */
 export function validateBoletoCode(value: string): BoletoValidation {
   const normalizedValue = normalizeBoletoCode(value);
   const shape = getCodeShape(normalizedValue);

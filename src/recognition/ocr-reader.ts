@@ -37,37 +37,122 @@ interface TesseractPage {
   blocks: TesseractBlock[] | null;
 }
 
+/**
+ * Represents one recognized word and its normalized page position.
+ */
 export interface OcrWord {
+  /**
+   * Provides the text recognized for the word.
+   */
   text: string;
+  /**
+   * Reports the OCR engine confidence on a zero-to-one-hundred scale.
+   */
   confidence: number;
+  /**
+   * Locates the word within normalized image coordinates.
+   */
   bounds: NormalizedBounds;
 }
 
+/**
+ * Represents one recognized text line and its constituent words.
+ */
 export interface OcrLine {
+  /**
+   * Provides the trimmed text recognized for the line.
+   */
   text: string;
+  /**
+   * Reports the OCR engine confidence on a zero-to-one-hundred scale.
+   */
   confidence: number;
+  /**
+   * Locates the line within normalized image coordinates.
+   */
   bounds: NormalizedBounds;
+  /**
+   * Lists the non-empty words assigned to the line.
+   */
   words: OcrWord[];
 }
 
+/**
+ * Represents one recognized text block and its ordered lines.
+ */
 export interface OcrBlock {
+  /**
+   * Provides the trimmed text recognized for the block.
+   */
   text: string;
+  /**
+   * Reports the OCR engine confidence on a zero-to-one-hundred scale.
+   */
   confidence: number;
+  /**
+   * Locates the block within normalized image coordinates.
+   */
   bounds: NormalizedBounds;
+  /**
+   * Lists the recognized lines assigned to the block.
+   */
   lines: OcrLine[];
 }
 
+/**
+ * Represents the normalized text hierarchy returned for one OCR request.
+ */
 export interface OcrRecognition {
+  /**
+   * Provides the complete text returned by the OCR engine.
+   */
   text: string;
+  /**
+   * Reports the page-level OCR confidence on a zero-to-one-hundred scale.
+   */
   confidence: number;
+  /**
+   * Lists the recognized blocks in engine order.
+   */
   blocks: OcrBlock[];
+  /**
+   * Lists all recognized lines in reading order.
+   */
   lines: OcrLine[];
+  /**
+   * Lists all non-empty recognized words in reading order.
+   */
   words: OcrWord[];
 }
 
+/**
+ * Defines a serialized OCR worker session shared across page recognitions.
+ */
 export interface OcrSession {
+  /**
+   * Recognizes sparse text throughout a PNG image.
+   *
+   * @param {Buffer} image - The PNG bytes to recognize.
+   * @returns {Promise<OcrRecognition>} Resolves with normalized blocks, lines, words, and aggregate text.
+   * @throws {Error} If the OCR worker cannot process the image.
+   */
   recognize(image: Buffer): Promise<OcrRecognition>;
+  /**
+   * Recognizes digits within a normalized rectangular region of a PNG image.
+   *
+   * @param {Buffer} image - The PNG bytes containing the target region.
+   * @param {NormalizedBounds} region - The non-empty normalized region to recognize.
+   * @returns {Promise<OcrRecognition>} Resolves with recognition data restricted to the requested region.
+   * @throws {TypeError} If PNG dimensions are unreadable, a region value is non-finite, or its width or height is non-positive.
+   * @throws {Error} If the OCR worker cannot process the image.
+   */
   recognizeDigits(image: Buffer, region: NormalizedBounds): Promise<OcrRecognition>;
+  /**
+   * Terminates the underlying OCR worker after queued recognition work completes.
+   *
+   * @returns {Promise<void>} Resolves after the worker has released its resources.
+   * @throws {Error} If the OCR worker cannot terminate cleanly.
+   */
   terminate(): Promise<void>;
 }
 
@@ -177,6 +262,12 @@ function pixelRectangle(
   };
 }
 
+/**
+ * Creates a Portuguese OCR session that serializes full-page and digit-region requests.
+ *
+ * @returns {Promise<OcrSession>} Resolves with an initialized OCR session ready to recognize PNG buffers.
+ * @throws {Error} If language data, the OCR runtime, or worker initialization fails.
+ */
 export async function createOcrSession(): Promise<OcrSession> {
   const [{ createWorker, OEM, PSM }, languageData] = await Promise.all([import("tesseract.js"), import("@tesseract.js-data/por")]);
   const worker = await createWorker("por", OEM.LSTM_ONLY, {
@@ -218,6 +309,7 @@ export async function createOcrSession(): Promise<OcrSession> {
     await worker.setParameters({
       tessedit_pageseg_mode: PSM.SPARSE_TEXT,
       preserve_interword_spaces: "1",
+      debug_file: "/dev/null",
     });
   } catch (error) {
     await worker.terminate().catch(() => undefined);

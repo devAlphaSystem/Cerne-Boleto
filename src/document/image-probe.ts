@@ -1,8 +1,14 @@
 import { ExtractionFailure } from "../errors";
 
+/**
+ * Describes dimensions and orientation read directly from an image header.
+ */
 export interface ImageProbe {
+  /** Specifies the encoded image width in pixels. */
   width: number;
+  /** Specifies the encoded image height in pixels. */
   height: number;
+  /** Records the EXIF orientation value, defaulting to the standard orientation. */
   orientation: number;
 }
 
@@ -11,6 +17,12 @@ const PNG_IHDR_LENGTH = 13;
 const JPEG_SOF_MARKERS = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
 const JPEG_STANDALONE_MARKERS = new Set([0x01, 0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7]);
 const EXIF_ORIENTATION_TAG = 0x0112;
+/**
+ * Defines the largest image dimension accepted by the native canvas backend.
+ *
+ * @constant
+ * @type {number}
+ */
 export const MAX_SUPPORTED_IMAGE_DIMENSION = 32_767;
 
 function readUInt16BE(data: Uint8Array, offset: number): number | null {
@@ -145,10 +157,26 @@ function probeJpeg(data: Uint8Array): ImageProbe {
   throw new ExtractionFailure("INVALID_IMAGE", "The JPEG header is truncated or malformed.");
 }
 
+/**
+ * Reads dimensions and orientation metadata from a validated image container.
+ *
+ * @param {Uint8Array} data - The encoded JPEG or PNG bytes to inspect.
+ * @param {"jpeg"|"png"} format - The detected image container format.
+ * @returns {ImageProbe} The dimensions and normalized EXIF orientation.
+ * @throws {ExtractionFailure} If the image header or PNG chunk structure is truncated or malformed.
+ */
 export function probeImage(data: Uint8Array, format: "jpeg" | "png"): ImageProbe {
   return format === "png" ? probePng(data) : probeJpeg(data);
 }
 
+/**
+ * Validates image dimensions against native and configured pixel limits.
+ *
+ * @param {number} width - The image width in pixels.
+ * @param {number} height - The image height in pixels.
+ * @param {number} maxSourceImagePixels - The maximum allowed source-image pixel area.
+ * @throws {ExtractionFailure} If a dimension is invalid or the total area exceeds its allowed limit.
+ */
 export function validateImageDimensions(width: number, height: number, maxSourceImagePixels: number): void {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
     throw new ExtractionFailure("INVALID_IMAGE", "The image declares invalid dimensions.");

@@ -2,7 +2,13 @@ import { extractBoletoBatch, extractBoletos } from "../extractor";
 import { elapsedMilliseconds, startTimer, type MonotonicTimestamp } from "../timing";
 import type { BatchExtractOptions, BatchExtractionResult, ExtractOptions, ExtractionResult } from "../types";
 
+/**
+ * Defines the output dependency used to emit CLI responses.
+ */
 export interface CliIo {
+  /**
+   * Provides the writable destination for serialized command results.
+   */
   stdout: Pick<NodeJS.WriteStream, "write">;
 }
 
@@ -38,6 +44,13 @@ function requiredValue(args: string[], index: number, option: string): string {
   return value;
 }
 
+/**
+ * Parses command-line tokens into extraction settings and document sources.
+ *
+ * @param {Array<string>} args - The command-line tokens following the executable name.
+ * @returns {ParsedCliArguments|typeof HELP} The parsed settings, or the help descriptor when `--help` is present.
+ * @throws {CliArgumentError} If an option is unknown, malformed, missing a value, or no source is provided.
+ */
 export function parseCliArguments(args: string[]): ParsedCliArguments | typeof HELP {
   if (args.includes("--help")) {
     return HELP;
@@ -153,6 +166,14 @@ function finalizeCliDuration(result: ExtractionResult | BatchExtractionResult, s
   }
 }
 
+/**
+ * Runs the boleto command-line workflow and writes one JSON response.
+ *
+ * @param {Array<string>} args - The command-line tokens to parse and execute.
+ * @param {CliIo} [io={ stdout: process.stdout }] - The output dependency used for the JSON response.
+ * @returns {Promise<number>} Resolves with `0` for help or a `success` result, `2` for `not_found`, or `1` for `partial` or `error`.
+ * @throws {Error} If the output destination fails while writing the fallback error response.
+ */
 export async function runCli(args: string[], io: CliIo = { stdout: process.stdout }): Promise<number> {
   const startedAt = startTimer();
   try {

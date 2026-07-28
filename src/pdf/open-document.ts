@@ -9,6 +9,16 @@ async function installCanvasGlobals(): Promise<void> {
   target["Path2D"] ??= canvas.Path2D;
 }
 
+/**
+ * Loads PDF.js with native canvas globals and opens a PDF under image limits.
+ *
+ * @param {Uint8Array} data - The PDF bytes to parse.
+ * @param {number} maxSourceImagePixels - The maximum decoded image area accepted by PDF.js.
+ * @param {number} maxCanvasPixels - The maximum PDF canvas area in pixels.
+ * @returns {Promise<PdfHandle>} Resolves with the parsed PDF.js document and cleanup operation.
+ * @throws {ExtractionFailure} If the PDF is encrypted or cannot be parsed.
+ * @throws {Error} If the native canvas or PDF.js module cannot be loaded or initialize a loading task.
+ */
 export async function openPdfDocument(data: Uint8Array, maxSourceImagePixels: number, maxCanvasPixels: number): Promise<PdfHandle> {
   await installCanvasGlobals();
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");

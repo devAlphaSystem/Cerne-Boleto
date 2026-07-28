@@ -6,6 +6,16 @@ import type { PdfPageLike } from "./types";
 
 const MAX_CANVAS_DIMENSION = 32_767;
 
+/**
+ * Renders a PDF page for recognition while enforcing canvas dimension and area limits.
+ *
+ * @param {PdfPageLike} page - The PDF.js-compatible page to render.
+ * @param {RenderRecipe} recipe - The scale and rotation requested for the PDF render.
+ * @param {number} maxPixels - The maximum allocated canvas area in pixels.
+ * @returns {Promise<RenderedPage>} Resolves with a disposable rendered page surface.
+ * @throws {ExtractionFailure} If the PDF page dimensions are invalid or exceed supported limits.
+ * @throws {Error} If the native canvas module or PDF.js renderer cannot produce the page.
+ */
 export async function renderPage(page: PdfPageLike, recipe: RenderRecipe, maxPixels: number): Promise<RenderedPage> {
   const { createCanvas } = await import("@napi-rs/canvas");
   const rotation = (((page.rotate + recipe.rotation) % 360) + 360) % 360;

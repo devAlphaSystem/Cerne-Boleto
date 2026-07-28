@@ -436,6 +436,22 @@ async function collectOcrEvidence(handle: DocumentHandle, cursor: PageCursor, st
   }
 }
 
+/**
+ * Extracts validated boleto codes and visible payment fields from one local, remote, or in-memory document.
+ *
+ * Processing failures are represented in the returned result instead of rejecting the promise.
+ *
+ * @param {DocumentInput} input - The file path, HTTP(S) URL, `ArrayBuffer`, or byte array to process.
+ * @param {ExtractOptions} [optionsInput={}] - The resource, OCR, timeout, and request settings for this run.
+ * @returns {Promise<ExtractionResult>} Resolves with validated matches, metadata, warnings, and any structured failure.
+ * @since 0.1.0
+ *
+ * @example
+ * const result = await extractBoletos("./boleto.pdf", {
+ *   performance: "balanced",
+ *   ocr: "fallback",
+ * });
+ */
 export async function extractBoletos(input: DocumentInput, optionsInput: ExtractOptions = {}): Promise<ExtractionResult> {
   const startedAt = startTimer();
   let options: ResolvedOptions;
@@ -607,6 +623,22 @@ function emptyBatchResult(message: string, inputsTotal: number, concurrency: num
   return result;
 }
 
+/**
+ * Extracts boletos from multiple document sources with bounded concurrency and stable input ordering.
+ *
+ * Invalid batch settings and per-source failures are represented in the returned result instead of rejecting the promise.
+ *
+ * @param {ReadonlyArray<BoletoBatchInput>} inputs - The document inputs or source descriptors to process.
+ * @param {BatchExtractOptions} [optionsInput={}] - The shared extraction settings and batch concurrency limit.
+ * @returns {Promise<BatchExtractionResult>} Resolves with per-input results, flattened matches, summary counts, and metadata.
+ * @since 0.1.0
+ *
+ * @example
+ * const result = await extractBoletoBatch(
+ *   ["./boleto.pdf", { input: "https://example.com/conta.png" }],
+ *   { concurrency: 2 },
+ * );
+ */
 export async function extractBoletoBatch(inputs: readonly BoletoBatchInput[], optionsInput: BatchExtractOptions = {}): Promise<BatchExtractionResult> {
   const startedAt = startTimer();
   if (!Array.isArray(inputs) || inputs.length === 0) {

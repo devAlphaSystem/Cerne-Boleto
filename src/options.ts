@@ -42,21 +42,67 @@ const PROFILE_DEFAULTS: Record<PerformanceProfile, ProfileDefaults> = {
   },
 };
 
+/**
+ * Defines the complete extraction settings after defaults and validation are applied.
+ */
 export interface ResolvedOptions {
+  /**
+   * Selects the resource and accuracy profile used by the pipeline.
+   */
   performance: PerformanceProfile;
+  /**
+   * Limits the number of rendering recipes attempted per page.
+   */
   passes: number;
+  /**
+   * Controls whether optical character recognition is disabled, conditional, or mandatory.
+   */
   ocr: OcrMode;
+  /**
+   * Limits how many pages may be processed from one document.
+   */
   maxPages: number;
+  /**
+   * Limits the accepted source size in bytes.
+   */
   maxFileSizeBytes: number;
+  /**
+   * Limits the pixel area of each rendered page.
+   */
   maxPixelsPerPage: number;
+  /**
+   * Limits the decoded pixel area of source images.
+   */
   maxSourceImagePixels: number;
+  /**
+   * Sets the extraction deadline in milliseconds, with zero disabling the deadline.
+   */
   timeoutMs: number;
+  /**
+   * Indicates whether processing may stop after the first validated boleto.
+   */
   stopAfterFirst: boolean;
+  /**
+   * Provides normalized HTTP headers for remote document requests.
+   */
   requestHeaders?: Readonly<Record<string, string>>;
+  /**
+   * Provides the caller-controlled cancellation signal.
+   */
   signal?: AbortSignal;
 }
 
+/**
+ * Represents an invalid or unsupported extraction option value.
+ *
+ * @class
+ */
 export class InvalidOptionsError extends Error {
+  /**
+   * Creates an extraction-options validation error.
+   *
+   * @param {string} message - The validation failure message.
+   */
   public constructor(message: string) {
     super(message);
     this.name = "InvalidOptionsError";
@@ -119,6 +165,13 @@ function normalizeRequestHeaders(requestHeaders: ExtractOptions["requestHeaders"
   return Object.freeze(normalized);
 }
 
+/**
+ * Resolves extraction options into a validated, fully populated configuration.
+ *
+ * @param {ExtractOptions} [options={}] - The caller-provided extraction overrides.
+ * @returns {ResolvedOptions} The validated options with profile defaults applied.
+ * @throws {InvalidOptionsError} If an option is outside its supported range or request headers are unsafe.
+ */
 export function resolveOptions(options: ExtractOptions = {}): ResolvedOptions {
   const performance = options.performance ?? "balanced";
   if (!Object.hasOwn(PROFILE_DEFAULTS, performance)) {
@@ -148,13 +201,37 @@ export function resolveOptions(options: ExtractOptions = {}): ResolvedOptions {
   };
 }
 
+/**
+ * Defines one page-rendering attempt used by barcode recognition or OCR.
+ */
 export interface RenderRecipe {
+  /**
+   * Specifies the PDF rendering scale or the neutral image scale.
+   */
   scale: number;
+  /**
+   * Specifies the clockwise rotation applied before recognition.
+   */
   rotation: 0 | 90 | 180 | 270;
+  /**
+   * Indicates whether surrounding low-information pixels should be cropped.
+   */
   crop?: boolean;
+  /**
+   * Indicates whether the rendered pixels should be converted to grayscale.
+   */
   grayscale?: boolean;
+  /**
+   * Indicates whether percentile-based contrast stretching should be attempted.
+   */
   contrast?: boolean;
+  /**
+   * Indicates whether small images may be enlarged for recognition.
+   */
   upscale?: boolean;
+  /**
+   * Specifies the maximum output pixel area targeted by the recipe.
+   */
   targetPixels?: number;
 }
 
@@ -206,6 +283,13 @@ const IMAGE_RECIPES: Record<PerformanceProfile, readonly RenderRecipe[]> = {
   ],
 };
 
+/**
+ * Returns the ordered rendering recipes allowed by the selected profile and document format.
+ *
+ * @param {ResolvedOptions} options - The validated extraction configuration.
+ * @param {DocumentFormat} [format="pdf"] - The source format that determines the recipe family.
+ * @returns {Array<RenderRecipe>} A new array capped to the configured number of passes.
+ */
 export function getRenderRecipes(options: ResolvedOptions, format: DocumentFormat = "pdf"): RenderRecipe[] {
   const recipes = format === "pdf" ? RECIPES[options.performance] : IMAGE_RECIPES[options.performance];
   return recipes.slice(0, options.passes);

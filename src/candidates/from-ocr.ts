@@ -87,6 +87,17 @@ function clampConfidence(value: number): number {
   return Math.max(0, Math.min(100, value));
 }
 
+/**
+ * Finds validated boleto representations in OCR text, including unambiguous
+ * candidates recovered through limited character substitution.
+ *
+ * @param {string} text - The OCR text to scan for boleto representations.
+ * @param {number} page - The 1-based page associated with the text.
+ * @param {number} pass - The 1-based rendered OCR pass that produced the text.
+ * @param {number} confidence - The OCR confidence to clamp to the zero-to-100 range.
+ * @param {NormalizedBounds} [bounds] - The optional page-relative bounds shared by the text.
+ * @returns {Array<CandidateEvidence>} The exact and uniquely corrected candidates in discovery order.
+ */
 export function findCandidatesInOcrText(text: string, page: number, pass: number, confidence: number, bounds?: NormalizedBounds): CandidateEvidence[] {
   const normalized = text.normalize("NFKC").replace(/\u00a0/gu, " ").toUpperCase();
   const ocrConfidence = clampConfidence(confidence);

@@ -13,14 +13,25 @@ const WINDOWS_DRIVE_PATH = /^[a-z]:/i;
 const HTTP_URL = /^https?:\/\//i;
 const URI_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 
+/**
+ * Represents owned document bytes after size and format validation.
+ */
 export interface LoadedInput {
+  /** Stores an owned view of the validated document bytes. */
   data: Uint8Array;
+  /** Records the validated document size in bytes. */
   size: number;
+  /** Identifies the document format detected from its byte signature. */
   format: DocumentFormat;
 }
 
+/**
+ * Configures request metadata and cancellation for loading a document input.
+ */
 export interface LoadDocumentInputControls {
+  /** Supplies validated caller headers for HTTP and HTTPS inputs only. */
   requestHeaders?: Readonly<Record<string, string>>;
+  /** Cancels an in-progress file read or remote download when aborted. */
   signal?: AbortSignal;
 }
 
@@ -255,6 +266,25 @@ async function downloadDocument(initialUrl: URL, maxFileSizeBytes: number, contr
   }
 }
 
+/**
+ * Loads, owns, and validates document bytes from memory, a local path, or an
+ * HTTP(S) URL before extraction begins.
+ *
+ * @param {DocumentInput} input - The in-memory bytes, local path, or HTTP(S) URL to load.
+ * @param {number} maxFileSizeBytes - The maximum accepted document size in bytes.
+ * @param {LoadDocumentInputControls} [controls={}] - Optional request headers and cancellation signal.
+ * @returns {Promise<LoadedInput>} Resolves with owned bytes, their size, and the detected format.
+ * @throws {ExtractionFailure} If the input, request controls, document format, file access, download, or size is invalid.
+ * @throws {Error} If an aborted remote request rejects with its platform-specific abort error.
+ * @throws {TypeError} If the supplied `ArrayBuffer` has been detached.
+ * @throws {RangeError} If an in-memory input cannot be copied within available memory.
+ *
+ * @example
+ * const loaded = await loadDocumentInput("https://example.com/boleto.pdf", 30 * 1024 * 1024, {
+ *   requestHeaders: { authorization: "Bearer token" },
+ *   signal: abortController.signal,
+ * });
+ */
 export async function loadDocumentInput(input: DocumentInput, maxFileSizeBytes: number, controls: LoadDocumentInputControls = {}): Promise<LoadedInput> {
   if (typeof input === "string") {
     const remoteUrl = remoteUrlFromInput(input);
