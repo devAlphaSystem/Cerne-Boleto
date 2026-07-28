@@ -150,6 +150,29 @@ function comparableValue(value: string): string {
   return value.normalize("NFKC").normalize("NFD").replace(/\p{M}/gu, "").replace(/\s+/gu, " ").trim().toUpperCase();
 }
 
+/**
+ * OCR passes are deterministic derivatives of the same visual page. They may
+ * improve the selected value or confidence, but they must not create extra
+ * majority votes merely because the same pixels were rotated or filtered.
+ */
+function collapseDerivedFieldCandidates(candidates: readonly FieldCandidate[]): FieldCandidate[] {
+  const output: FieldCandidate[] = [];
+  const ocrByValue = new Map<string, FieldCandidate>();
+  for (const candidate of candidates) {
+    if (candidate.source !== "ocr") {
+      output.push(candidate);
+      continue;
+    }
+    const key = `${candidate.page}:${candidate.kind}:${candidate.partyRole ?? ""}:${comparableValue(candidate.value)}`;
+    const current = ocrByValue.get(key);
+    if (current === undefined || candidate.confidence > current.confidence) {
+      ocrByValue.set(key, candidate);
+    }
+  }
+  output.push(...ocrByValue.values());
+  return output;
+}
+
 function orderByReliability(candidates: readonly FieldCandidate[]): FieldCandidate[] {
   return [...candidates].sort((left, right) => {
     if (right.confidence !== left.confidence) {
@@ -187,6 +210,7 @@ function prefixConsolidation(byValue: ReadonlyMap<string, FieldCandidate[]>, kin
 }
 
 function visibleResolution(candidates: FieldCandidate[]): VisibleResolution {
+  candidates = collapseDerivedFieldCandidates(candidates);
   if (candidates.length === 0) {
     return { field: null, conflict: false, discardedMinority: false };
   }
@@ -243,6 +267,44 @@ function visibleResolution(candidates: FieldCandidate[]): VisibleResolution {
     conflict: false,
     discardedMinority,
   };
+}
+
+function horizontalOverlap(left: NormalizedBounds, right: NormalizedBounds): number {
+  const intersection = Math.max(0, Math.min(left.x + left.width, right.x + right.width) - Math.max(left.x, right.x));
+  return intersection / Math.max(0.000_001, Math.min(left.width, right.width));
+}
+
+function samePhysicalEvidence(left: NormalizedBounds, right: NormalizedBounds): boolean {
+  const leftCenterY = left.y + left.height / 2;
+  const rightCenterY = right.y + right.height / 2;
+  return horizontalOverlap(left, right) >= 0.5 && Math.abs(leftCenterY - rightCenterY) <= Math.max(0.12, left.height, right.height);
+}
+
+/**
+ * Counts independent physical occurrences while collapsing repeated render
+ * passes of the same page/source. Distinct recognition families remain
+ * independent, as do spatially separate copies of the same code.
+ */
+function occurrenceCount(items: readonly CandidateEvidence[]): number {
+  const byPageAndSource = new Map<string, CandidateEvidence[]>();
+  for (const item of items) {
+    const key = `${item.page}:${item.source}`;
+    const current = byPageAndSource.get(key) ?? [];
+    current.push(item);
+    byPageAndSource.set(key, current);
+  }
+
+  let total = 0;
+  for (const group of byPageAndSource.values()) {
+    const physical: NormalizedBounds[] = [];
+    for (const item of group) {
+      if (item.bounds !== undefined && !physical.some((bounds) => samePhysicalEvidence(bounds, item.bounds!))) {
+        physical.push(item.bounds);
+      }
+    }
+    total += Math.max(1, physical.length);
+  }
+  return total;
 }
 
 function candidatesFor(fields: FieldCandidate[], kind: FieldCandidate["kind"], partyRole?: PartyRole): FieldCandidate[] {
@@ -495,7 +557,7 @@ export function mergeEvidence(evidence: CandidateEvidence[], fieldCandidates: Fi
       precisionScore: Number(precisionScore.toFixed(3)),
       pages,
       sources: SOURCE_ORDER.filter((source) => sources.has(source)),
-      occurrences: group.items.length,
+      occurrences: occurrenceCount(group.items),
       components: resolved.components,
       generalInfo: resolved.info,
     });

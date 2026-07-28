@@ -5,32 +5,35 @@ import { findCandidatesInOcrText } from "./candidates/from-ocr";
 import { findCandidatesInDecodedValue, findCandidatesInPositionedText, findCandidatesInText } from "./candidates/from-text";
 import type { CandidateEvidence, CandidateTextLine, FieldCandidate, NormalizedBounds } from "./candidates/types";
 import { WorkGuard } from "./deadline";
+import { loadDocumentInput } from "./document/load-input";
+import { openDocument } from "./document/open-document";
+import type { DocumentHandle, DocumentPageLike, ExtractedPageText, RenderedPage } from "./document/types";
 import { ExtractionFailure } from "./errors";
 import { getRenderRecipes, InvalidOptionsError, resolveOptions, type RenderRecipe, type ResolvedOptions } from "./options";
-import { extractPageText, type ExtractedPageText } from "./pdf/extract-text";
-import { loadPdfInput } from "./pdf/load-input";
-import { openPdfDocument } from "./pdf/open-document";
-import type { PdfHandle, PdfPageLike } from "./pdf/types";
 import type { OcrRecognition, OcrSession } from "./recognition/ocr-reader";
 import { mergeEvidence } from "./scoring/merge-results";
-import type { BatchExtractOptions, BatchExtractionItem, BatchExtractionResult, BatchMatchedBoleto, BoletoBatchInput, ExtractOptions, ExtractionErrorCode, ExtractionErrorInfo, ExtractionMetadata, ExtractionResult, ExtractionStatus, PdfInput } from "./types";
+import type { BatchExtractOptions, BatchExtractionItem, BatchExtractionResult, BatchMatchedBoleto, BoletoBatchInput, DocumentFormat, DocumentInput, ExtractOptions, ExtractionErrorCode, ExtractionErrorInfo, ExtractionMetadata, ExtractionResult, ExtractionStatus } from "./types";
 
 interface MutableRunState {
   evidence: CandidateEvidence[];
   fields: FieldCandidate[];
   warnings: string[];
+  inputFormat: DocumentFormat | null;
   pagesTotal: number;
   pagesProcessed: number;
   renderedPages: Set<number>;
+  renderAttempts: number;
   ocrPages: Set<number>;
   nativeTextPages: Set<number>;
   passesUsed: number;
   fileSizeBytes: number;
+  sourceImageWidth: number | null;
+  sourceImageHeight: number | null;
   complete: boolean;
 }
 
 interface ResolvedBatchSource {
-  input: PdfInput;
+  input: DocumentInput;
   requestHeaders?: Readonly<Record<string, string>>;
 }
 
@@ -39,13 +42,17 @@ function emptyState(): MutableRunState {
     evidence: [],
     fields: [],
     warnings: [],
+    inputFormat: null,
     pagesTotal: 0,
     pagesProcessed: 0,
     renderedPages: new Set(),
+    renderAttempts: 0,
     ocrPages: new Set(),
     nativeTextPages: new Set(),
     passesUsed: 0,
     fileSizeBytes: 0,
+    sourceImageWidth: null,
+    sourceImageHeight: null,
     complete: true,
   };
 }
@@ -54,13 +61,17 @@ function metadata(options: ResolvedOptions, state: MutableRunState, startedAt: n
   return {
     performance: options.performance,
     ocrMode: options.ocr,
+    ...(state.inputFormat === null ? {} : { inputFormat: state.inputFormat }),
     passesRequested: options.passes,
     passesUsed: state.passesUsed,
     pagesTotal: state.pagesTotal,
     pagesProcessed: state.pagesProcessed,
     pagesRendered: state.renderedPages.size,
+    renderAttempts: state.renderAttempts,
     ocrPages: state.ocrPages.size,
     fileSizeBytes: state.fileSizeBytes,
+    ...(state.sourceImageWidth === null ? {} : { sourceImageWidth: state.sourceImageWidth }),
+    ...(state.sourceImageHeight === null ? {} : { sourceImageHeight: state.sourceImageHeight }),
     maxPixelsPerPage: options.maxPixelsPerPage,
     maxSourceImagePixels: options.maxSourceImagePixels,
     durationMs: Number((performance.now() - startedAt).toFixed(2)),
@@ -93,18 +104,18 @@ function resultFromState(options: ResolvedOptions, state: MutableRunState, start
   };
 }
 
-function failureResult(code: ExtractionErrorCode, message: string, startedAt = performance.now()): ExtractionResult {
+function failureResult(code: ExtractionErrorCode, message: string, options: ResolvedOptions = resolveOptions(), startedAt = performance.now()): ExtractionResult {
   const state = emptyState();
   state.complete = false;
-  return resultFromState(resolveOptions(), state, startedAt, { code, message });
+  return resultFromState(options, state, startedAt, { code, message });
 }
 
 function invalidOptionsResult(error: InvalidOptionsError, startedAt: number): ExtractionResult {
-  return failureResult("INVALID_OPTIONS", error.message, startedAt);
+  return failureResult("INVALID_OPTIONS", error.message, resolveOptions(), startedAt);
 }
 
-async function withPage<T>(handle: PdfHandle, pageNumber: number, work: (page: PdfPageLike) => Promise<T>): Promise<T> {
-  const page = await handle.document.getPage(pageNumber);
+async function withPage<T>(handle: DocumentHandle, pageNumber: number, work: (page: DocumentPageLike) => Promise<T>): Promise<T> {
+  const page = await handle.getPage(pageNumber);
   try {
     return await work(page);
   } finally {
@@ -161,64 +172,44 @@ function hasPageEvidence(evidence: CandidateEvidence[], page: number): boolean {
   return evidence.some((candidate) => candidate.page === page);
 }
 
-/**
- * A render recipe rotates relative to the PDF's normal display orientation.
- * Convert recognition coordinates back to that base orientation before
- * comparing them with native PDF text coordinates.
- */
-function baseOrientationBounds(bounds: NormalizedBounds, rotation: RenderRecipe["rotation"]): NormalizedBounds {
-  switch (rotation) {
-    case 0:
-      return bounds;
-    case 90:
-      return {
-        x: bounds.y,
-        y: 1 - bounds.x - bounds.width,
-        width: bounds.height,
-        height: bounds.width,
-      };
-    case 270:
-      return {
-        x: 1 - bounds.y - bounds.height,
-        y: bounds.x,
-        width: bounds.height,
-        height: bounds.width,
-      };
-  }
-}
-
-async function collectTextEvidence(handle: PdfHandle, state: MutableRunState, pageLimit: number, guard: WorkGuard, stopAfterFirst: boolean): Promise<number[]> {
+async function collectTextEvidence(handle: DocumentHandle, state: MutableRunState, pageLimit: number, guard: WorkGuard, stopAfterFirst: boolean): Promise<number[]> {
   const processedPages: number[] = [];
   for (let pageNumber = 1; pageNumber <= pageLimit; pageNumber += 1) {
     guard.check();
     const pageResult = await withPage(handle, pageNumber, async (page) => {
-      const pageText = await extractPageText(page);
+      const nativeText = page.nativeText();
+      if (nativeText === null) {
+        return null;
+      }
+      const pageText = await nativeText;
       return {
         pageText,
         candidates: textEvidence(pageText, pageNumber),
       };
     });
     guard.check();
-    if (pageResult.pageText.hasText) {
-      state.nativeTextPages.add(pageNumber);
+    if (pageResult !== null) {
+      if (pageResult.pageText.hasText) {
+        state.nativeTextPages.add(pageNumber);
+      }
+      state.evidence.push(...pageResult.candidates.evidence);
+      state.fields.push(...pageResult.candidates.fields);
     }
-    state.evidence.push(...pageResult.candidates.evidence);
-    state.fields.push(...pageResult.candidates.fields);
     state.pagesProcessed += 1;
     processedPages.push(pageNumber);
-    if (stopAfterFirst && pageResult.candidates.evidence.length > 0) {
+    if (stopAfterFirst && pageResult !== null && pageResult.candidates.evidence.length > 0) {
       break;
     }
   }
   return processedPages;
 }
 
-async function collectBarcodeEvidence(handle: PdfHandle, state: MutableRunState, pages: number[], recipes: RenderRecipe[], options: ResolvedOptions, guard: WorkGuard): Promise<void> {
+async function collectBarcodeEvidence(handle: DocumentHandle, state: MutableRunState, pages: number[], recipes: RenderRecipe[], options: ResolvedOptions, guard: WorkGuard): Promise<void> {
   if (pages.length === 0 || recipes.length === 0) {
     return;
   }
 
-  const [{ renderPage }, { readBarcodes }] = await Promise.all([import("./pdf/render-page"), import("./recognition/barcode-reader")]);
+  const { readBarcodes } = await import("./recognition/barcode-reader");
 
   for (let passIndex = 0; passIndex < recipes.length; passIndex += 1) {
     const recipe = recipes[passIndex];
@@ -229,10 +220,15 @@ async function collectBarcodeEvidence(handle: PdfHandle, state: MutableRunState,
     for (const pageNumber of pages) {
       guard.check();
       const candidates = await withPage(handle, pageNumber, async (page) => {
-        const rendered = await renderPage(page, recipe, options.maxPixelsPerPage);
+        const rendered = await page.render(recipe, options.maxPixelsPerPage);
+        state.renderAttempts += 1;
         state.renderedPages.add(pageNumber);
-        const decoded = await readBarcodes(rendered);
-        return decoded.flatMap((barcode) => findCandidatesInDecodedValue(barcode.text, pageNumber, barcode.source, passIndex + 1, baseOrientationBounds(barcode.bounds, recipe.rotation)));
+        try {
+          const decoded = await readBarcodes(rendered, { photoEnhancements: handle.format !== "pdf" });
+          return decoded.flatMap((barcode) => findCandidatesInDecodedValue(barcode.text, pageNumber, barcode.source, passIndex + 1, rendered.mapBoundsToPage(barcode.bounds)));
+        } finally {
+          rendered.dispose();
+        }
       });
       guard.check();
       state.evidence.push(...candidates);
@@ -243,7 +239,10 @@ async function collectBarcodeEvidence(handle: PdfHandle, state: MutableRunState,
   }
 }
 
-function ocrRecipes(recipes: RenderRecipe[], options: ResolvedOptions): RenderRecipe[] {
+function ocrRecipes(recipes: RenderRecipe[], options: ResolvedOptions, format: DocumentFormat): RenderRecipe[] {
+  if (format !== "pdf") {
+    return recipes;
+  }
   const unrotated = recipes.filter((recipe) => recipe.rotation === 0).sort((left, right) => right.scale - left.scale)[0];
   const selected = unrotated === undefined ? [] : [unrotated];
   if (options.performance === "accurate") {
@@ -252,23 +251,23 @@ function ocrRecipes(recipes: RenderRecipe[], options: ResolvedOptions): RenderRe
   return selected;
 }
 
-function ocrCandidateLines(recognition: OcrRecognition, page: number, pass: number, rotation: RenderRecipe["rotation"]): CandidateTextLine[] {
+function ocrCandidateLines(recognition: OcrRecognition, page: number, pass: number, rendered: RenderedPage): CandidateTextLine[] {
   return recognition.lines.map((line) => ({
     text: line.text,
     page,
     source: "ocr",
     pass,
     confidence: line.confidence,
-    bounds: baseOrientationBounds(line.bounds, rotation),
+    bounds: rendered.mapBoundsToPage(line.bounds),
     words: line.words.map((word) => ({
       ...word,
-      bounds: baseOrientationBounds(word.bounds, rotation),
+      bounds: rendered.mapBoundsToPage(word.bounds),
     })),
   }));
 }
 
-function ocrLineEvidence(recognition: OcrRecognition, page: number, pass: number, rotation: RenderRecipe["rotation"]): CandidateEvidence[] {
-  return recognition.lines.flatMap((line) => findCandidatesInOcrText(line.text, page, pass, line.confidence, baseOrientationBounds(line.bounds, rotation)));
+function ocrLineEvidence(recognition: OcrRecognition, page: number, pass: number, rendered: RenderedPage): CandidateEvidence[] {
+  return recognition.lines.flatMap((line) => findCandidatesInOcrText(line.text, page, pass, line.confidence, rendered.mapBoundsToPage(line.bounds)));
 }
 
 function expandRegion(bounds: NormalizedBounds): NormalizedBounds {
@@ -313,18 +312,18 @@ function uniquePageEvidence(evidence: CandidateEvidence[]): CandidateEvidence[] 
   return [...unique.values()];
 }
 
-async function digitRegionEvidence(session: OcrSession, image: Buffer, recognition: OcrRecognition, page: number, pass: number, rotation: RenderRecipe["rotation"], guard: WorkGuard): Promise<CandidateEvidence[]> {
+async function digitRegionEvidence(session: OcrSession, image: Buffer, recognition: OcrRecognition, page: number, pass: number, rendered: RenderedPage, guard: WorkGuard): Promise<CandidateEvidence[]> {
   const evidence: CandidateEvidence[] = [];
   for (const region of numericCandidateRegions(recognition)) {
     guard.check();
     const retried = await session.recognizeDigits(image, region);
     guard.check();
-    evidence.push(...findCandidatesInOcrText(retried.text, page, pass, retried.confidence, baseOrientationBounds(region, rotation)));
+    evidence.push(...findCandidatesInOcrText(retried.text, page, pass, retried.confidence, rendered.mapBoundsToPage(region)));
   }
   return uniquePageEvidence(evidence);
 }
 
-async function collectOcrEvidence(handle: PdfHandle, state: MutableRunState, pages: number[], recipes: RenderRecipe[], options: ResolvedOptions, guard: WorkGuard): Promise<OcrSession | null> {
+async function collectOcrEvidence(handle: DocumentHandle, state: MutableRunState, pages: number[], recipes: RenderRecipe[], options: ResolvedOptions, guard: WorkGuard): Promise<OcrSession | null> {
   if (options.ocr === "never") {
     return null;
   }
@@ -333,12 +332,12 @@ async function collectOcrEvidence(handle: PdfHandle, state: MutableRunState, pag
     return null;
   }
 
-  const selectedRecipes = ocrRecipes(recipes, options);
+  const selectedRecipes = ocrRecipes(recipes, options, handle.format);
   if (selectedRecipes.length === 0) {
     return null;
   }
 
-  const [{ renderPage }, { createOcrSession }] = await Promise.all([import("./pdf/render-page"), import("./recognition/ocr-reader")]);
+  const { createOcrSession } = await import("./recognition/ocr-reader");
   const session = await createOcrSession();
   try {
     for (const pageNumber of pending) {
@@ -347,17 +346,22 @@ async function collectOcrEvidence(handle: PdfHandle, state: MutableRunState, pag
         const pass = recipes.indexOf(recipe) + 1;
         state.passesUsed = Math.max(state.passesUsed, pass);
         const pageResult = await withPage(handle, pageNumber, async (page) => {
-          const rendered = await renderPage(page, recipe, options.maxPixelsPerPage);
+          const rendered = await page.render(recipe, options.maxPixelsPerPage);
+          state.renderAttempts += 1;
           state.renderedPages.add(pageNumber);
           state.ocrPages.add(pageNumber);
-          const image = rendered.toPng();
-          const recognized = await session.recognize(image);
-          const candidates = uniquePageEvidence([...ocrLineEvidence(recognized, pageNumber, pass, recipe.rotation), ...findCandidatesInOcrText(recognized.text, pageNumber, pass, recognized.confidence)]);
-          const retried = candidates.length === 0 ? await digitRegionEvidence(session, image, recognized, pageNumber, pass, recipe.rotation, guard) : [];
-          return {
-            evidence: [...candidates, ...retried],
-            fields: extractFieldCandidates(ocrCandidateLines(recognized, pageNumber, pass, recipe.rotation)),
-          };
+          try {
+            const image = rendered.toPng();
+            const recognized = await session.recognize(image);
+            const candidates = uniquePageEvidence([...ocrLineEvidence(recognized, pageNumber, pass, rendered), ...findCandidatesInOcrText(recognized.text, pageNumber, pass, recognized.confidence)]);
+            const retried = candidates.length === 0 ? await digitRegionEvidence(session, image, recognized, pageNumber, pass, rendered, guard) : [];
+            return {
+              evidence: [...candidates, ...retried],
+              fields: extractFieldCandidates(ocrCandidateLines(recognized, pageNumber, pass, rendered)),
+            };
+          } finally {
+            rendered.dispose();
+          }
         });
         guard.check();
         state.evidence.push(...pageResult.evidence);
@@ -376,11 +380,11 @@ async function collectOcrEvidence(handle: PdfHandle, state: MutableRunState, pag
 
 /**
  * Extracts validated cobrança and arrecadação boletos from one local path,
- * direct HTTP(S) PDF URL, or in-memory PDF.
+ * direct HTTP(S) URL, or in-memory PDF, JPEG, or PNG document.
  *
  * Expected input and processing failures resolve to a JSON-safe result.
  */
-export async function extractBoletos(input: PdfInput, optionsInput: ExtractOptions = {}): Promise<ExtractionResult> {
+export async function extractBoletos(input: DocumentInput, optionsInput: ExtractOptions = {}): Promise<ExtractionResult> {
   const startedAt = performance.now();
   let options: ResolvedOptions;
   try {
@@ -394,20 +398,23 @@ export async function extractBoletos(input: PdfInput, optionsInput: ExtractOptio
 
   const state = emptyState();
   const guard = new WorkGuard(options, startedAt);
-  let handle: PdfHandle | null = null;
+  let handle: DocumentHandle | null = null;
   let ocrSession: OcrSession | null = null;
 
   try {
     guard.check();
-    const loaded = await loadPdfInput(input, options.maxFileSizeBytes, {
+    const loaded = await loadDocumentInput(input, options.maxFileSizeBytes, {
       ...(options.requestHeaders === undefined ? {} : { requestHeaders: options.requestHeaders }),
       signal: guard.signal,
     });
     guard.check();
     state.fileSizeBytes = loaded.size;
-    handle = await openPdfDocument(loaded.data, options.maxSourceImagePixels, options.maxPixelsPerPage);
+    state.inputFormat = loaded.format;
+    handle = await openDocument(loaded, options.maxSourceImagePixels, options.maxPixelsPerPage);
     guard.check();
-    state.pagesTotal = handle.document.numPages;
+    state.sourceImageWidth = handle.sourceImageDimensions?.width ?? null;
+    state.sourceImageHeight = handle.sourceImageDimensions?.height ?? null;
+    state.pagesTotal = handle.numPages;
     const pageLimit = Math.min(state.pagesTotal, options.maxPages);
     if (pageLimit < state.pagesTotal) {
       state.complete = false;
@@ -416,7 +423,7 @@ export async function extractBoletos(input: PdfInput, optionsInput: ExtractOptio
 
     const processedPages = await collectTextEvidence(handle, state, pageLimit, guard, options.stopAfterFirst);
     if (!(options.stopAfterFirst && state.evidence.length > 0)) {
-      const recipes = getRenderRecipes(options);
+      const recipes = getRenderRecipes(options, handle.format);
       await collectBarcodeEvidence(handle, state, processedPages, recipes, options, guard);
       if (!(options.stopAfterFirst && state.evidence.length > 0)) {
         ocrSession = await collectOcrEvidence(handle, state, processedPages, recipes, options, guard);
@@ -436,7 +443,7 @@ export async function extractBoletos(input: PdfInput, optionsInput: ExtractOptio
     } catch (guardError) {
       resolvedError = guardError;
     }
-    const failure = resolvedError instanceof ExtractionFailure ? resolvedError : new ExtractionFailure("PROCESSING_ERROR", "The PDF could not be processed.", { cause: resolvedError });
+    const failure = resolvedError instanceof ExtractionFailure ? resolvedError : new ExtractionFailure("PROCESSING_ERROR", "The document could not be processed.", { cause: resolvedError });
     return resultFromState(options, state, startedAt, {
       code: failure.code,
       message: failure.message,
@@ -448,16 +455,16 @@ export async function extractBoletos(input: PdfInput, optionsInput: ExtractOptio
   }
 }
 
-function isSimplePdfInput(value: unknown): value is PdfInput {
+function isSimpleDocumentInput(value: unknown): value is DocumentInput {
   return typeof value === "string" || value instanceof ArrayBuffer || value instanceof Uint8Array;
 }
 
 function resolveBatchSource(value: BoletoBatchInput): ResolvedBatchSource {
-  if (isSimplePdfInput(value)) {
+  if (isSimpleDocumentInput(value)) {
     return { input: value };
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new ExtractionFailure("INVALID_INPUT", "Each batch item must be a PDF source or a source descriptor.");
+    throw new ExtractionFailure("INVALID_INPUT", "Each batch item must be a document source or a source descriptor.");
   }
 
   let prototype: object | null;
@@ -472,8 +479,8 @@ function resolveBatchSource(value: BoletoBatchInput): ResolvedBatchSource {
 
   const inputDescriptor = Object.getOwnPropertyDescriptor(value, "input");
   const headersDescriptor = Object.getOwnPropertyDescriptor(value, "requestHeaders");
-  if (inputDescriptor === undefined || !("value" in inputDescriptor) || !isSimplePdfInput(inputDescriptor.value)) {
-    throw new ExtractionFailure("INVALID_INPUT", "A batch source descriptor must contain a PDF input.");
+  if (inputDescriptor === undefined || !("value" in inputDescriptor) || !isSimpleDocumentInput(inputDescriptor.value)) {
+    throw new ExtractionFailure("INVALID_INPUT", "A batch source descriptor must contain a document input.");
   }
   if (headersDescriptor !== undefined && (!("value" in headersDescriptor) || (headersDescriptor.value !== undefined && (typeof headersDescriptor.value !== "object" || headersDescriptor.value === null || Array.isArray(headersDescriptor.value))))) {
     throw new ExtractionFailure("INVALID_OPTIONS", "A batch source descriptor contains invalid requestHeaders.");
@@ -498,6 +505,7 @@ function batchMetadata(options: ResolvedOptions, items: BatchExtractionItem[], s
     pagesTotal: items.reduce((sum, item) => sum + item.result.metadata.pagesTotal, 0),
     pagesProcessed: items.reduce((sum, item) => sum + item.result.metadata.pagesProcessed, 0),
     pagesRendered: items.reduce((sum, item) => sum + item.result.metadata.pagesRendered, 0),
+    renderAttempts: items.reduce((sum, item) => sum + (item.result.metadata.renderAttempts ?? 0), 0),
     ocrPages: items.reduce((sum, item) => sum + item.result.metadata.ocrPages, 0),
     fileSizeBytes: items.reduce((sum, item) => sum + item.result.metadata.fileSizeBytes, 0),
     maxPixelsPerPage: options.maxPixelsPerPage,
@@ -600,7 +608,7 @@ export async function extractBoletoBatch(inputs: readonly BoletoBatchInput[], op
         });
       } catch (error) {
         const failure = error instanceof ExtractionFailure ? error : new ExtractionFailure("INVALID_INPUT", "A batch source descriptor could not be processed.", { cause: error });
-        result = failureResult(failure.code, failure.message);
+        result = failureResult(failure.code, failure.message, resolvedOptions);
       }
       itemResults[inputIndex] = { inputIndex, result };
     }
@@ -612,7 +620,7 @@ export async function extractBoletoBatch(inputs: readonly BoletoBatchInput[], op
     for (let inputIndex = 0; inputIndex < inputs.length; inputIndex += 1) {
       itemResults[inputIndex] ??= {
         inputIndex,
-        result: failureResult("ABORTED", "Extraction was aborted."),
+        result: failureResult("ABORTED", "Extraction was aborted.", resolvedOptions, startedAt),
       };
     }
   }

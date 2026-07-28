@@ -14,7 +14,9 @@ interface ParsedCliArguments {
 
 const HELP = {
   name: "Cerne Boleto",
-  usage: "cerne-boleto <file-or-url>... [--performance fast|balanced|accurate] [--passes 1..5]",
+  usage: "cerne-boleto <document-or-url>... [--performance fast|balanced|accurate] [--passes 1..5]",
+  inputFormats: ["pdf", "jpeg", "png"],
+  examples: ["cerne-boleto ./boleto.pdf --pretty", "cerne-boleto ./foto-boleto.jpg --performance balanced", "cerne-boleto https://documents.example/boleto.png --first --pretty", "cerne-boleto ./boleto.pdf ./foto-boleto.jpg ./conta.png --concurrency 2 --pretty"],
   options: ["--performance <profile>", "--passes <number>", "--ocr <never|fallback|always>", "--max-pages <number>", "--max-file-size <bytes>", "--max-pixels <number>", "--max-source-pixels <number>", "--timeout-ms <number>", "--concurrency <1..8>", "--first", "--pretty", "--help"],
 } as const;
 
@@ -107,7 +109,7 @@ export function parseCliArguments(args: string[]): ParsedCliArguments | typeof H
   }
 
   if (sources.length === 0) {
-    throw new CliArgumentError("At least one PDF path or HTTP(S) URL is required.");
+    throw new CliArgumentError("At least one document path or HTTP(S) URL (PDF, JPEG, or PNG) is required.");
   }
 
   return { sources, options, concurrency, pretty };
@@ -128,6 +130,7 @@ function cliError(message: string): ExtractionResult {
       pagesTotal: 0,
       pagesProcessed: 0,
       pagesRendered: 0,
+      renderAttempts: 0,
       ocrPages: 0,
       fileSizeBytes: 0,
       maxPixelsPerPage: 12_000_000,

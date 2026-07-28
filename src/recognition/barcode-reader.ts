@@ -1,7 +1,7 @@
 import type { BinaryBitmap, DecodeHintType, LuminanceSource, Reader, Result } from "@zxing/library";
 
 import type { NormalizedBounds } from "../candidates/types";
-import type { RenderedPage } from "../pdf/render-page";
+import type { RenderedPage } from "../document/types";
 
 interface PixelRegion {
   left: number;
@@ -14,6 +14,11 @@ export interface DecodedBarcode {
   text: string;
   source: "itf";
   bounds: NormalizedBounds;
+}
+
+export interface BarcodeReadOptions {
+  /** Enables bounded photo-specific blur and global-threshold attempts. */
+  photoEnhancements?: boolean;
 }
 
 function clamp01(value: number): number {
@@ -59,6 +64,32 @@ function scanRegions(width: number, height: number): PixelRegion[] {
   addRegion(regions, width, height, 0, 0, 1, 1);
 
   return regions;
+}
+
+/**
+ * A one-pixel box blur fuses the dotted modules of thermal-printer barcodes
+ * into solid bars, which binarizes far more reliably in photographs.
+ */
+function boxBlurLuminance(source: Uint8ClampedArray, width: number, height: number): Uint8ClampedArray {
+  const horizontal = new Float32Array(width * height);
+  const output = new Uint8ClampedArray(width * height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const left = source[y * width + Math.max(0, x - 1)] ?? 0;
+      const center = source[y * width + x] ?? 0;
+      const right = source[y * width + Math.min(width - 1, x + 1)] ?? 0;
+      horizontal[y * width + x] = (left + center + right) / 3;
+    }
+  }
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const top = horizontal[Math.max(0, y - 1) * width + x] ?? 0;
+      const center = horizontal[y * width + x] ?? 0;
+      const bottom = horizontal[Math.min(height - 1, y + 1) * width + x] ?? 0;
+      output[y * width + x] = (top + center + bottom) / 3;
+    }
+  }
+  return output;
 }
 
 function decodeBitmap(reader: Reader, bitmap: BinaryBitmap, hints: Map<DecodeHintType, unknown>): Result | null {
@@ -128,10 +159,10 @@ function mergeBounds(left: NormalizedBounds, right: NormalizedBounds): Normalize
   };
 }
 
-export async function readBarcodes(rendered: RenderedPage): Promise<DecodedBarcode[]> {
+export async function readBarcodes(rendered: RenderedPage, options: BarcodeReadOptions = {}): Promise<DecodedBarcode[]> {
   const imported = await import("@zxing/library");
   const zxing = (imported as unknown as { default?: typeof imported }).default ?? imported;
-  const { BarcodeFormat, BinaryBitmap, DecodeHintType, HybridBinarizer, ITFReader, InvertedLuminanceSource, RGBLuminanceSource } = zxing;
+  const { BarcodeFormat, BinaryBitmap, DecodeHintType, GlobalHistogramBinarizer, HybridBinarizer, ITFReader, InvertedLuminanceSource, RGBLuminanceSource } = zxing;
   const hints = new Map<DecodeHintType, unknown>();
   hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.ITF]);
   hints.set(DecodeHintType.ALLOWED_LENGTHS, Int32Array.from([44]));
@@ -147,6 +178,7 @@ export async function readBarcodes(rendered: RenderedPage): Promise<DecodedBarco
   }
 
   const pageSource = new RGBLuminanceSource(luminance, rendered.width, rendered.height);
+  const blurredSource = options.photoEnhancements === true ? new RGBLuminanceSource(boxBlurLuminance(luminance, rendered.width, rendered.height), rendered.width, rendered.height) : null;
   const reader = new ITFReader();
   const output: DecodedBarcode[] = [];
 
@@ -159,8 +191,17 @@ export async function readBarcodes(rendered: RenderedPage): Promise<DecodedBarco
     }
 
     const sources: LuminanceSource[] = [cropped, new InvertedLuminanceSource(cropped)];
+    if (blurredSource !== null) {
+      try {
+        const croppedBlurred = blurredSource.crop(region.left, region.top, region.width, region.height);
+        sources.push(croppedBlurred, new InvertedLuminanceSource(croppedBlurred));
+      } catch {
+        // The original crop remains usable when a derived photographic crop fails.
+      }
+    }
     for (const source of sources) {
-      const result = decodeBitmap(reader, new BinaryBitmap(new HybridBinarizer(source)), hints);
+      const adaptive = decodeBitmap(reader, new BinaryBitmap(new HybridBinarizer(source)), hints);
+      const result = adaptive ?? (options.photoEnhancements === true ? decodeBitmap(reader, new BinaryBitmap(new GlobalHistogramBinarizer(source)), hints) : null);
       if (result === null || !/^[0-9]{44}$/u.test(result.getText())) {
         continue;
       }

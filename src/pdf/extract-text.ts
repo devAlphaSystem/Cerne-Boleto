@@ -1,4 +1,5 @@
 import type { NormalizedBounds } from "../candidates/types";
+import type { ExtractedPageText, ExtractedTextLine, ExtractedTextWord } from "../document/types";
 import { ExtractionFailure } from "../errors";
 import type { PdfPageLike, PdfTextItemLike, PdfViewportLike } from "./types";
 
@@ -21,27 +22,7 @@ interface MutableTextLine {
   items: PositionedTextItem[];
 }
 
-export interface ExtractedTextWord {
-  text: string;
-  bounds: NormalizedBounds;
-}
-
-export interface ExtractedTextLine {
-  text: string;
-  bounds: NormalizedBounds;
-  words: ExtractedTextWord[];
-}
-
-export interface ExtractedPageText {
-  orderedText: string;
-  /** Plain strings retained for compatibility with the original extractor. */
-  visualLines: string[];
-  /** Reconstructed visual lines with normalized page coordinates. */
-  lines: ExtractedTextLine[];
-  /** All positioned words in visual reading order. */
-  words: ExtractedTextWord[];
-  hasText: boolean;
-}
+export type { ExtractedPageText, ExtractedTextLine, ExtractedTextWord } from "../document/types";
 
 function isTextItem(value: unknown): value is PdfTextItemLike {
   return typeof value === "object" && value !== null && "str" in value && typeof value.str === "string";

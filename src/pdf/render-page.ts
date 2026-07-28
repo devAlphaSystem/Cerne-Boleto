@@ -1,17 +1,10 @@
+import { undoRecipeRotation } from "../document/geometry";
+import type { RenderedPage } from "../document/types";
 import { ExtractionFailure } from "../errors";
 import type { RenderRecipe } from "../options";
 import type { PdfPageLike } from "./types";
 
 const MAX_CANVAS_DIMENSION = 32_767;
-
-export interface RenderedPage {
-  width: number;
-  height: number;
-  appliedScale: number;
-  rotation: number;
-  getPixels(): Uint8ClampedArray;
-  toPng(): Buffer;
-}
 
 export async function renderPage(page: PdfPageLike, recipe: RenderRecipe, maxPixels: number): Promise<RenderedPage> {
   const { createCanvas } = await import("@napi-rs/canvas");
@@ -58,6 +51,13 @@ export async function renderPage(page: PdfPageLike, recipe: RenderRecipe, maxPix
     background: "#ffffff",
   }).promise;
   let pixels: Uint8ClampedArray | null = null;
+  let disposed = false;
+
+  function assertAvailable(): void {
+    if (disposed) {
+      throw new ExtractionFailure("PROCESSING_ERROR", "The rendered PDF surface is already disposed.");
+    }
+  }
 
   return {
     width,
@@ -65,11 +65,25 @@ export async function renderPage(page: PdfPageLike, recipe: RenderRecipe, maxPix
     appliedScale: scale,
     rotation,
     getPixels(): Uint8ClampedArray {
+      assertAvailable();
       pixels ??= context.getImageData(0, 0, width, height).data;
       return pixels;
     },
     toPng(): Buffer {
+      assertAvailable();
       return canvas.toBuffer("image/png");
+    },
+    mapBoundsToPage(bounds) {
+      return undoRecipeRotation(bounds, recipe.rotation);
+    },
+    dispose(): void {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      pixels = null;
+      canvas.width = 1;
+      canvas.height = 1;
     },
   };
 }

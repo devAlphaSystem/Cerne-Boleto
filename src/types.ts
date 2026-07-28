@@ -1,7 +1,13 @@
 import type { BoletoComponents, BoletoLayout } from "./validation/boleto";
 
-/** A local path, HTTP(S) URL, or in-memory PDF byte source. */
-export type PdfInput = string | ArrayBuffer | Uint8Array;
+/** A local path, HTTP(S) URL, or in-memory PDF, JPEG, or PNG byte source. */
+export type DocumentInput = string | ArrayBuffer | Uint8Array;
+
+/** Compatibility alias kept for existing consumers; prefer DocumentInput. */
+export type PdfInput = DocumentInput;
+
+/** Input format detected from the document bytes, never from names or headers. */
+export type DocumentFormat = "pdf" | "jpeg" | "png";
 
 export type PerformanceProfile = "fast" | "balanced" | "accurate";
 
@@ -13,7 +19,7 @@ export type ExtractionSource = "pdf-text" | "pdf-text-reconstructed" | "itf" | "
 
 export type BoletoFieldSource = "encoded" | "pdf-text" | "ocr";
 
-export type ExtractionErrorCode = "INVALID_INPUT" | "FILE_NOT_FOUND" | "FILE_TOO_LARGE" | "DOWNLOAD_ERROR" | "INVALID_OPTIONS" | "INVALID_PDF" | "PASSWORD_REQUIRED" | "TIMEOUT" | "ABORTED" | "RESOURCE_LIMIT" | "PROCESSING_ERROR";
+export type ExtractionErrorCode = "INVALID_INPUT" | "FILE_NOT_FOUND" | "FILE_TOO_LARGE" | "DOWNLOAD_ERROR" | "INVALID_OPTIONS" | "INVALID_PDF" | "UNSUPPORTED_FORMAT" | "INVALID_IMAGE" | "PASSWORD_REQUIRED" | "TIMEOUT" | "ABORTED" | "RESOURCE_LIMIT" | "PROCESSING_ERROR";
 
 export interface ExtractOptions {
   /** Processing/cost profile. Defaults to `balanced`. */
@@ -22,13 +28,13 @@ export interface ExtractOptions {
   passes?: number;
   /** OCR policy. Profile defaults are `never`, `fallback`, and `fallback`. */
   ocr?: OcrMode;
-  /** Maximum pages processed from the beginning of the PDF. */
+  /** Maximum pages processed from the beginning of the document. */
   maxPages?: number;
   /** Maximum accepted input size. Defaults to 30 MiB. */
   maxFileSizeBytes?: number;
   /** Maximum render area per page, after scale and rotation. */
   maxPixelsPerPage?: number;
-  /** Maximum decoded source-image area accepted from a PDF page. */
+  /** Maximum decoded source-image area accepted from a PDF page or standalone image. */
   maxSourceImagePixels?: number;
   /** Overall deadline in milliseconds. Network I/O aborts; CPU stages check cooperatively. */
   timeoutMs?: number;
@@ -82,13 +88,21 @@ export interface ExtractedBoleto {
 export interface ExtractionMetadata {
   performance: PerformanceProfile;
   ocrMode: OcrMode;
+  /** Format detected from the input bytes. Absent when loading failed before detection and in batch-level metadata. */
+  inputFormat?: DocumentFormat;
   passesRequested: number;
   passesUsed: number;
   pagesTotal: number;
   pagesProcessed: number;
   pagesRendered: number;
+  /** Total visual surfaces rendered, including multiple passes of one page. */
+  renderAttempts?: number;
   ocrPages: number;
   fileSizeBytes: number;
+  /** Original decoded width for JPEG/PNG inputs. */
+  sourceImageWidth?: number;
+  /** Original decoded height for JPEG/PNG inputs. */
+  sourceImageHeight?: number;
   maxPixelsPerPage: number;
   maxSourceImagePixels: number;
   durationMs: number;
@@ -113,12 +127,12 @@ export interface ExtractionResult {
 }
 
 export interface BoletoBatchSourceDescriptor {
-  input: PdfInput;
+  input: DocumentInput;
   /** Per-source headers prevent credentials from being shared with unrelated URLs. */
   requestHeaders?: Readonly<Record<string, string>>;
 }
 
-export type BoletoBatchInput = PdfInput | BoletoBatchSourceDescriptor;
+export type BoletoBatchInput = DocumentInput | BoletoBatchSourceDescriptor;
 
 export type BatchExtractOptions = Omit<ExtractOptions, "requestHeaders" | "signal"> & {
   /** Maximum inputs processed concurrently. Defaults to 1 and accepts 1 through 8. */

@@ -1,6 +1,6 @@
 import { validateHeaderName, validateHeaderValue } from "node:http";
 
-import type { ExtractOptions, OcrMode, PerformanceProfile } from "./types";
+import type { DocumentFormat, ExtractOptions, OcrMode, PerformanceProfile } from "./types";
 
 const MEBIBYTE = 1024 * 1024;
 
@@ -150,7 +150,17 @@ export function resolveOptions(options: ExtractOptions = {}): ResolvedOptions {
 
 export interface RenderRecipe {
   scale: number;
-  rotation: 0 | 90 | 270;
+  rotation: 0 | 90 | 180 | 270;
+  /** Uses a conservative content crop, used only by image documents. */
+  crop?: boolean;
+  /** Converts the rendered pixels to grayscale, used only by image documents. */
+  grayscale?: boolean;
+  /** Applies a moderate deterministic contrast stretch, used only by image documents. */
+  contrast?: boolean;
+  /** Allows a bounded enlargement of very small images. */
+  upscale?: boolean;
+  /** Downscale-only pixel target which helps dotted thermal prints, used only by image documents. */
+  targetPixels?: number;
 }
 
 const RECIPES: Record<PerformanceProfile, readonly RenderRecipe[]> = {
@@ -177,6 +187,37 @@ const RECIPES: Record<PerformanceProfile, readonly RenderRecipe[]> = {
   ],
 };
 
-export function getRenderRecipes(options: ResolvedOptions): RenderRecipe[] {
-  return RECIPES[options.performance].slice(0, options.passes);
+/**
+ * Image recipes use scale 1 as the natural (EXIF-oriented) image size. The
+ * first pass always keeps the original pixels; later passes add a moderate
+ * downscale that consolidates dotted thermal prints, a moderate contrast
+ * stretch, and the discrete rotations photographs commonly need.
+ */
+const IMAGE_RECIPES: Record<PerformanceProfile, readonly RenderRecipe[]> = {
+  fast: [
+    { scale: 1, rotation: 0 },
+    { scale: 1, rotation: 0, crop: true, grayscale: true, contrast: true, upscale: true, targetPixels: 950_000 },
+    { scale: 1, rotation: 90, crop: true, grayscale: true, contrast: true, upscale: true, targetPixels: 950_000 },
+    { scale: 1, rotation: 270, crop: true, grayscale: true, contrast: true, upscale: true, targetPixels: 950_000 },
+    { scale: 1, rotation: 180, crop: true, grayscale: true, contrast: true, upscale: true, targetPixels: 950_000 },
+  ],
+  balanced: [
+    { scale: 1, rotation: 0 },
+    { scale: 1, rotation: 0, crop: true, grayscale: true, contrast: true, upscale: true, targetPixels: 1_450_000 },
+    { scale: 1, rotation: 90, crop: true, grayscale: true, contrast: true, upscale: true, targetPixels: 1_450_000 },
+    { scale: 1, rotation: 270, crop: true, grayscale: true, contrast: true, upscale: true, targetPixels: 1_450_000 },
+    { scale: 1, rotation: 180, crop: true, grayscale: true, contrast: true, upscale: true, targetPixels: 1_450_000 },
+  ],
+  accurate: [
+    { scale: 1, rotation: 0 },
+    { scale: 1, rotation: 0, crop: true, grayscale: true, contrast: true, upscale: true, targetPixels: 2_200_000 },
+    { scale: 1, rotation: 90, crop: true, grayscale: true, contrast: true, upscale: true, targetPixels: 2_200_000 },
+    { scale: 1, rotation: 270, crop: true, grayscale: true, contrast: true, upscale: true, targetPixels: 2_200_000 },
+    { scale: 1, rotation: 180, crop: true, grayscale: true, contrast: true, upscale: true, targetPixels: 2_200_000 },
+  ],
+};
+
+export function getRenderRecipes(options: ResolvedOptions, format: DocumentFormat = "pdf"): RenderRecipe[] {
+  const recipes = format === "pdf" ? RECIPES[options.performance] : IMAGE_RECIPES[options.performance];
+  return recipes.slice(0, options.passes);
 }

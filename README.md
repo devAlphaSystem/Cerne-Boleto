@@ -1,9 +1,10 @@
 # Cerne Boleto
 
 O Cerne Boleto extrai linhas digitáveis e informações gerais de um ou mais
-boletos em PDFs locais ou remotos. O processamento usa somente CPU: primeiro
-analisa o texto nativo do PDF, depois procura códigos de barras ITF e, quando o
-perfil permite, usa OCR local em português.
+boletos em PDF, JPEG ou PNG, recebidos por caminho, URL ou memória. O
+processamento usa somente CPU: PDFs aproveitam seu texto nativo, todas as fontes
+visuais passam pelo leitor ITF e, quando o perfil permite, pelo OCR local em
+português.
 
 O pacote reconhece:
 
@@ -32,7 +33,7 @@ O modelo de OCR em português é instalado com o pacote e carregado localmente.
 ```ts
 import { extractBoletos } from "cerne-boleto";
 
-const result = await extractBoletos("/local/path/boletos.pdf", {
+const result = await extractBoletos("/local/path/boleto.jpg", {
   performance: "balanced",
   passes: 2,
 });
@@ -41,12 +42,20 @@ console.log(JSON.stringify(result, null, 2));
 ```
 
 Uma fonte pode ser um caminho local, uma URL HTTP/HTTPS apontando diretamente
-para bytes PDF, `Buffer`, `Uint8Array` ou `ArrayBuffer`:
+para bytes PDF, JPEG ou PNG, `Buffer`, `Uint8Array` ou `ArrayBuffer`. O formato
+é detectado pela assinatura dos bytes; extensão e `Content-Type` não decidem a
+aceitação:
+
+No TypeScript, `DocumentInput` é o nome recomendado para esse contrato.
+`PdfInput` permanece exportado apenas como alias compatível, sem um caminho de
+implementação paralelo.
 
 ```ts
 const fromBytes = await extractBoletos(pdfBuffer);
 
-const fromUrl = await extractBoletos("https://documents.example.com/public/boleto.pdf");
+const fromImage = await extractBoletos(jpegBuffer);
+
+const fromUrl = await extractBoletos("https://documents.example.com/public/boleto.png");
 ```
 
 Para uma URL autenticada, use `requestHeaders`, disponível somente na API:
@@ -75,7 +84,8 @@ import { extractBoletoBatch } from "cerne-boleto";
 const batch = await extractBoletoBatch(
   [
     "./boleto-a.pdf",
-    pdfBuffer,
+    "./foto-boleto.jpg",
+    pngBuffer,
     {
       input: "https://documents.example.com/private/boleto-b.pdf",
       requestHeaders: {
@@ -105,7 +115,11 @@ no resultado. O envelope de lote acrescenta:
   quantidade de boletos encontrados.
 
 `metadata` consolida páginas, bytes, renderizações e OCR de todas as entradas,
-além dos limites e da duração do lote.
+além dos limites e da duração do lote. Nos resultados individuais,
+`inputFormat` informa `pdf`, `jpeg` ou `png`, e `renderAttempts` contabiliza
+cada superfície visual efetivamente criada. Para JPEG e PNG,
+`sourceImageWidth` e `sourceImageHeight` registram as dimensões decodificadas
+originais; esses campos não aparecem no metadado agregado de um lote misto.
 
 No lote, `partial` também representa uma ou mais varreduras incompletas sem
 boletos encontrados. `error` fica reservado ao lote sem resultados e sem itens
@@ -181,11 +195,14 @@ Datas normalizadas usam `YYYY-MM-DD`. Valores e centavos permanecem strings para
 não perder zeros à esquerda nem introduzir arredondamento binário. CPF e CNPJ
 são normalizados sem pontuação; o CNPJ pode ser numérico ou alfanumérico.
 
-`pages` usa numeração iniciada em `1`. `occurrences` conta quantas evidências do
-mesmo boleto foram consolidadas. Em cada fonte, a deduplicação usa o código de
-barras canônico de 44 dígitos, portanto a linha digitável e o ITF
-correspondentes não criam dois resultados. No lote, cada boleto permanece
-associado ao seu `inputIndex`; não há deduplicação global entre arquivos.
+`pages` usa numeração iniciada em `1`; imagens sempre têm a página `1`.
+`occurrences` conta evidências físicas consolidadas, sem transformar filtros,
+escalas ou rotações dos mesmos pixels em novas ocorrências. Fontes realmente
+distintas, como ITF e OCR, permanecem independentes. Em cada documento, a
+deduplicação usa o código de barras canônico de 44 dígitos, portanto a linha
+digitável e o ITF correspondentes não criam dois resultados. No lote, cada
+boleto permanece associado ao seu `inputIndex`; não há deduplicação global
+entre arquivos.
 
 ### Componentes de cobrança
 
@@ -290,7 +307,7 @@ representativo.
 | `maxPages`             | inteiro positivo               | `10`, `30` ou `50`   | Máximo de páginas processadas                                |
 | `maxFileSizeBytes`     | inteiro positivo               | 30 MiB               | Limite da entrada local ou remota                            |
 | `maxPixelsPerPage`     | inteiro positivo               | específico do perfil | Limite da área renderizada por página                        |
-| `maxSourceImagePixels` | inteiro positivo               | específico do perfil | Limite da imagem de origem decodificada                      |
+| `maxSourceImagePixels` | inteiro positivo               | específico do perfil | Limite da imagem de origem antes e depois da decodificação   |
 | `timeoutMs`            | `0..3600000`                   | específico do perfil | Prazo do download e extração; `0` desabilita o prazo         |
 | `stopAfterFirst`       | booleano                       | `false`              | Interrompe após o primeiro boleto integralmente válido       |
 | `requestHeaders`       | registro de strings            | nenhum               | Cabeçalhos de uma URL; disponível apenas na extração simples |
@@ -311,7 +328,15 @@ Perfis:
 No perfil `balanced`, o OCR de fallback é usado quando falta um código válido ou
 quando uma página digitalizada precisa fornecer campos gerais. `ocr: "always"`
 força OCR; `ocr: "never"` o desativa. A etapa de texto nativo sempre é
-executada e não conta como passagem visual.
+executada apenas em PDF e não conta como passagem visual.
+
+Imagens são documentos visuais de uma página. A primeira passagem mantém o
+quadro completo, sem recorte, contraste ou ampliação. Passagens posteriores,
+até o limite de `passes`, podem usar recorte conservador de margens uniformes,
+escala de cinza, contraste moderado, redimensionamento limitado e rotações
+discretas. As coordenadas reconhecidas são sempre remapeadas à imagem original
+já orientada por EXIF. Para tentar todas as rotações de 90 graus, use
+`passes: 5`.
 
 ## OCR e reconhecimento de códigos
 
@@ -324,6 +349,13 @@ primeira leitura textual não produzir um código válido, somente regiões
 numéricas candidatas são repetidas com uma lista permitida de dígitos.
 Correções de caracteres visualmente confundíveis só são aceitas quando levam a
 um único código integralmente válido; uma correção ambígua é descartada.
+
+Uma fotografia degradada pode terminar legitimamente em `not_found`. As
+passagens adicionais aumentam as tentativas de leitura, mas não garantem
+recuperação e não autorizam completar trechos ilegíveis. Informações como
+beneficiário, vencimento ou valor nunca substituem um código que não tenha
+passado por todas as validações FEBRABAN. QR Code Pix não é usado como
+substituto automático da linha digitável ou do código de barras.
 
 ## CLI
 
@@ -338,8 +370,9 @@ fontes produzem o envelope de `extractBoletoBatch`:
 
 ```bash
 cerne-boleto ./boleto.pdf --performance balanced --pretty
-cerne-boleto ./a.pdf ./b.pdf --concurrency 2 --pretty
-cerne-boleto https://documents.example.com/public/boleto.pdf --pretty
+cerne-boleto ./boleto.jpg --passes 5 --pretty
+cerne-boleto ./a.pdf ./foto.jpeg ./conta.png --concurrency 2 --pretty
+cerne-boleto https://documents.example.com/public/boleto.png --pretty
 ```
 
 Opções disponíveis:
@@ -397,20 +430,19 @@ Passar nos DVs confirma a consistência do código com o layout, não a
 autenticidade, existência, quitação, situação cadastral ou legitimidade do
 boleto. O pacote não consulta bancos e não funciona como ferramenta antifraude.
 
-## Download de PDFs remotos
+## Download de documentos remotos
 
 Somente URLs completas `http://` e `https://` são aceitas. A URL deve apontar
-diretamente para bytes PDF; páginas HTML, formulários de login e navegação por
-cookies ficam fora do escopo.
+diretamente para bytes PDF, JPEG ou PNG; páginas HTML, formulários de login e
+navegação por cookies ficam fora do escopo. O formato declarado pelo servidor
+não é confiado: a assinatura real dos bytes determina o caminho de abertura.
 
 O download segue respostas 301, 302, 303, 307 e 308, com no máximo cinco
 redirecionamentos. Cabeçalhos fornecidos pela aplicação são preservados em
 redirecionamentos de mesma origem. Quando a origem muda ou HTTPS é rebaixado
 para HTTP, todos esses cabeçalhos são removidos; somente o `Accept-Encoding:
 identity` controlado internamente pelo pacote é recriado. O limite
-`maxFileSizeBytes` é aplicado ao `Content-Length` e aos bytes recebidos. A
-assinatura do PDF, e não a extensão ou o tipo de mídia, determina se a resposta
-é aceita.
+`maxFileSizeBytes` é aplicado ao `Content-Length` e aos bytes recebidos.
 
 Trate URLs como entradas confiáveis. O pacote não é um filtro de SSRF: uma URL e
 seus redirecionamentos podem alcançar qualquer endereço acessível ao processo.
@@ -420,24 +452,33 @@ fornecer os bytes ao extrator.
 
 ## Segurança, privacidade e recursos
 
-- A rede é usada somente para baixar a URL informada. PDF, texto, códigos e
-  imagens não são enviados a OCR ou processamento externo.
+- A rede é usada somente para baixar a URL informada. Documentos, texto,
+  códigos e imagens não são enviados a OCR ou processamento externo.
 - O modelo de idioma do OCR é lido do disco local.
 - Caminhos, URLs, consultas, buffers e credenciais não são incluídos nos
   resultados estruturados.
 - A aplicação chamadora continua responsável por não registrar entradas ou
   credenciais ao redor da biblioteca.
-- Tamanho do arquivo, páginas, pixels de origem e renderização, itens de texto,
-  volume textual, tempo e concorrência têm limites.
+- Tamanho do arquivo, páginas, pixels de origem e renderização, dimensões de
+  imagem, itens de texto, volume textual, tempo e concorrência têm limites.
+- JPEG e PNG têm largura, altura e área verificadas no cabeçalho antes da
+  decodificação e novamente após a abertura. Cada eixo fica limitado a 32767
+  pixels, além de `maxSourceImagePixels`.
 - O download e as etapas de CPU respeitam cancelamento, dentro dos pontos
   cooperativos de cada operação.
 - A execução de JavaScript contido em PDF permanece desabilitada.
 - Recursos de PDF, canvas e OCR são encerrados após a extração.
 
 PDFs criptografados que exigem senha retornam `PASSWORD_REQUIRED`; o pacote não
-oferece uma opção de senha. PDFs inválidos, muito grandes ou que excedem limites
-retornam erros estruturados. Uma digitalização danificada pode resultar em
-`not_found`; o extrator não aceita um código parcial.
+oferece uma opção de senha. PDFs e imagens inválidos, muito grandes ou que
+excedem limites retornam erros estruturados. Uma digitalização danificada pode
+resultar em `not_found`; o extrator não aceita um código parcial.
+
+HEIC/HEIF, TIFF, GIF estático ou animado, imagens multipágina e vídeo ficam
+fora do escopo. Cada JPEG ou PNG é tratado como uma única página. O
+pré-processamento não corrige perspectiva; fotos muito inclinadas, com
+deformação, reflexo, desfoque forte ou código encoberto podem terminar em
+`not_found`.
 
 Códigos de erro:
 
@@ -448,12 +489,23 @@ FILE_TOO_LARGE
 DOWNLOAD_ERROR
 INVALID_OPTIONS
 INVALID_PDF
+INVALID_IMAGE
+UNSUPPORTED_FORMAT
 PASSWORD_REQUIRED
 TIMEOUT
 ABORTED
 RESOURCE_LIMIT
 PROCESSING_ERROR
 ```
+
+## Interface local
+
+A pasta `live` contém uma interface sem dependências frontend adicionais. Ela
+aceita seleção, arrastar e soltar ou URL pública para PDF, JPEG e PNG. PDFs são
+mostrados em `iframe`; imagens usam um elemento apropriado. Downloads remotos
+são feitos uma única vez, permanecem somente em memória pelo TTL configurado e
+passam por bloqueio de endereços locais, privados e reservados. Consulte
+`live/README.md`.
 
 ## Referências
 
