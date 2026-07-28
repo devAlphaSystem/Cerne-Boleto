@@ -1,187 +1,118 @@
 # Cerne Boleto
 
-Extração local de linhas digitáveis, códigos de barras e informações gerais de
-boletos em **PDF, JPEG ou PNG** — por caminho, URL ou bytes em memória.
-Processamento **somente por CPU**: sem GPU, sem serviço externo, sem credencial
-de API.
+Biblioteca e CLI para extrair códigos validados e informações gerais de boletos a partir de PDF, JPEG e PNG. As entradas podem ser caminhos locais, URLs HTTP(S) ou bytes em memória; o processamento usa CPU local, sem depender de um serviço externo de OCR.
+
+O projeto reconhece boletos de cobrança e de arrecadação, consolida evidências vindas do texto do PDF, do código de barras ITF e do OCR e só retorna como resultado códigos que passam pelas regras estruturais, semânticas e de dígitos verificadores implementadas pela biblioteca.
+
+> A validação confirma a consistência do código segundo as regras suportadas. Ela não confirma autenticidade, titularidade, situação de pagamento nem segurança do beneficiário. Antes de pagar, confira os dados em um canal confiável.
+
+## Recursos principais
+
+- PDF com ou sem camada de texto, JPEG e PNG, detectados pelo conteúdo dos bytes.
+- Entrada por arquivo local, URL HTTP(S), `ArrayBuffer`, `Uint8Array` ou `Buffer`.
+- Extração individual e em lote, com concorrência limitada e ordem estável.
+- Leitura de linha digitável no texto, código de barras ITF e OCR em português.
+- Validação de cobrança (44/47 dígitos) e arrecadação (44/48 dígitos).
+- Conversão entre código de barras e linha digitável, formatação e decomposição dos campos codificados.
+- Extração de instituição, beneficiário, beneficiário final, pagador, CPF/CNPJ, vencimento, valor, nosso número, número e data do documento quando há evidência confiável.
+- Limites configuráveis de arquivo, páginas, pixels, tempo e cancelamento com `AbortSignal`.
+- Saída estruturada com status, confiança, origem, páginas, avisos, metadados e erros estáveis.
+- Distribuição ESM, CommonJS, tipos TypeScript e executável `cerne-boleto`.
+
+## Requisitos e instalação
+
+- Node.js 20 ou superior.
+- Um sistema compatível com as dependências nativas instaladas por `@napi-rs/canvas`.
 
 ```bash
 npm install cerne-boleto
 ```
 
+Mais detalhes, inclusive uso a partir do código-fonte, estão em [docs/INSTALACAO.md](docs/INSTALACAO.md).
+
+## Uso rápido da API
+
 ```ts
 import { extractBoletos } from "cerne-boleto";
 
-const result = await extractBoletos("./boleto.pdf");
+const extraction = await extractBoletos("./boleto.pdf", {
+  performance: "balanced",
+  ocr: "fallback",
+});
 
-if (result.success) {
-  console.log(result.bestMatch.formattedDigitableLine);
-  // 00190.50095 40144.816069 06809.350314 3 37370000000100
+if (extraction.status === "success" || extraction.status === "partial") {
+  for (const boleto of extraction.results) {
+    console.log(boleto.formattedDigitableLine);
+    console.log(boleto.generalInfo.amount?.value ?? "valor não identificado");
+  }
+} else if (extraction.status === "not_found") {
+  console.log("Nenhum boleto válido foi encontrado.");
+} else {
+  console.error(extraction.error?.code, extraction.error?.message);
 }
 ```
 
-## Documentação
+Falhas de leitura e processamento são representadas em `ExtractionResult`; consulte `status`, `error`, `warnings` e `metadata.complete` em vez de depender apenas de exceções.
 
-| Documento                        | Conteúdo                                                        |
-| -------------------------------- | --------------------------------------------------------------- |
-| [Instalação](docs/INSTALACAO.md) | Requisitos, scripts e benchmark                                 |
-| [API](docs/API.md)               | Referência completa de funções, opções, tipos e erros           |
-| [CLI](docs/CLI.md)               | Argumentos, códigos de saída e consumo da saída JSON            |
-| [Exemplos](docs/EXEMPLOS.md)     | Receitas para lote, URLs, cancelamento, validação e integrações |
-
-## O que é reconhecido
-
-- Boletos de **cobrança**: código de barras de 44 dígitos, linha digitável de 47.
-- Variante de cobrança **`988/0`**, identificada por ISPB.
-- Contas e convênios de **arrecadação**: 44 dígitos, linha digitável de 48.
-
-Só entra em `results` o código que passa **integralmente** pelas regras de
-formato, semântica e dígitos verificadores. Beneficiário, pagador ou valor,
-isoladamente, nunca criam um boleto artificial.
-
-## Como funciona
-
-| Etapa            | Aplicação                                                   |
-| ---------------- | ----------------------------------------------------------- |
-| Texto nativo     | Somente PDF; não conta como passagem visual                 |
-| Código de barras | Leitor ITF, aceito apenas com 44 dígitos válidos            |
-| OCR              | Tesseract local em português, conforme o modo configurado   |
-| Consolidação     | Deduplicação pelo código canônico e pontuação por evidência |
-
-Campos visíveis — instituição, beneficiário, beneficiário final, pagador,
-CPF/CNPJ, vencimento, valor, nosso número, número e data do documento — são
-associados ao boleto **geometricamente mais próximo** quando há mais de um na
-mesma página.
-
-## Perfis
-
-| Perfil     | Passagens | OCR        | Páginas | Prazo padrão |
-| ---------- | --------- | ---------- | ------- | ------------ |
-| `fast`     | 1         | `never`    | 10      | 30 s         |
-| `balanced` | 2         | `fallback` | 30      | 120 s        |
-| `accurate` | 3         | `fallback` | 50      | 300 s        |
-
-O perfil só define padrões: qualquer opção informada explicitamente prevalece.
-Para esgotar as rotações de 90 graus em uma foto, use `passes: 5`.
-
-## Custo de memória
-
-O pico é transitório e vale por chamada: N extrações simultâneas multiplicam
-esse valor por N. Medido num JPEG de 3,9 MP e num PDF equivalente:
-
-| Etapa                                   | Pico    | Tempo  |
-| --------------------------------------- | ------- | ------ |
-| PDF com texto nativo (`stopAfterFirst`) | ~0 MB   | ~16 ms |
-| Decodificar a imagem de origem          | ~22 MB  | —      |
-| Render + leitura de código de barras    | ~32 MB  | —      |
-| Passagens extras de `accurate`          | ~27 MB  | —      |
-| **OCR**                                 | ~126 MB | ~1,7 s |
-
-**O OCR domina, e o custo é subir o motor**: criar o worker do Tesseract sem
-reconhecer nada já custa ~104 MB e ~290 ms. O reconhecimento em si é barato —
-três páginas seguidas no mesmo worker somam ~9 MB. É a mesma natureza da heap
-WebAssembly do OpenCV: runtime do motor, não trabalho útil.
-
-Por isso `fast` usa `ocr: "never"` e os demais perfis usam `fallback`, que só
-aciona o OCR quando código de barras e texto nativo falham. Force `ocr: "always"`
-apenas quando a perda de reconhecimento justificar o custo; `maxPixelsPerPage`
-governa o restante linearmente.
-
-## Lote
-
-```ts
-import { extractBoletoBatch } from "cerne-boleto";
-
-const batch = await extractBoletoBatch(["./a.pdf", "./foto.jpg", pngBuffer], {
-  concurrency: 2,
-});
-
-console.log(batch.summary.boletosFound);
-```
-
-A ordem das entradas é preservada e cada resultado carrega seu `inputIndex`.
-Cabeçalhos HTTP pertencem ao descritor de **uma** entrada — não existe
-`requestHeaders` global —, de modo que credenciais de uma origem não vazam para
-outra.
-
-## CLI
+## Uso rápido da CLI
 
 ```bash
 cerne-boleto ./boleto.pdf --pretty
-cerne-boleto ./a.pdf ./foto.jpeg ./conta.png --concurrency 2 --pretty
+cerne-boleto ./boleto.pdf ./conta.png --concurrency 2 --pretty
 ```
 
-Uma fonte produz o envelope simples; duas ou mais produzem o envelope de lote. A
-saída padrão contém somente JSON. Códigos de saída: `0` sucesso, `2` varredura
-completa sem boleto, `1` parcial ou erro.
+A CLI escreve um único JSON em `stdout`. O código de saída é `0` para sucesso ou ajuda, `2` quando nada foi encontrado e `1` para resultado parcial, erro ou argumentos inválidos. Veja todas as opções em [docs/CLI.md](docs/CLI.md).
 
-Não existe `--document-type`: cobrança e arrecadação são reconhecidas na mesma
-execução. A CLI não aceita cabeçalhos nem senhas — use a API com
-`requestHeaders` para downloads autenticados.
+## Perfis de desempenho
 
-## Validação independente
+| Perfil     | Passes | OCR padrão | Máximo de páginas | Pixels por página | Pixels da imagem-fonte | Prazo |
+| ---------- | -----: | ---------- | ----------------: | ----------------: | ---------------------: | ----: |
+| `fast`     |      1 | `never`    |                10 |         8.000.000 |             40.000.000 |  30 s |
+| `balanced` |      2 | `fallback` |                30 |        12.000.000 |             60.000.000 | 120 s |
+| `accurate` |      3 | `fallback` |                50 |        20.000.000 |            100.000.000 | 300 s |
 
-Os validadores não precisam abrir um documento:
+O perfil padrão é `balanced`. O limite padrão de arquivo é 30 MiB em todos os perfis. Cada valor pode ser sobrescrito dentro dos intervalos aceitos; a referência completa está em [docs/API.md](docs/API.md#opções-de-extração).
 
-```ts
-import { validateBoletoCode } from "cerne-boleto";
+## Documentação
 
-const validacao = validateBoletoCode("00190.50095 40144.816069 06809.350314 3 37370000000100");
-console.log(validacao.isValid, validacao.layout);
+- [Instalação e distribuição](docs/INSTALACAO.md)
+- [Referência da API](docs/API.md)
+- [CLI](docs/CLI.md)
+- [Exemplos](docs/EXEMPLOS.md)
+- [Benchmark](bench/README.md)
+
+## Estrutura do repositório
+
+```text
+src/
+  candidates/    descoberta de códigos e campos visíveis
+  cli/           parsing e execução da CLI
+  document/      carregamento e abstração de PDF/imagem
+  pdf/           texto, abertura e renderização de PDF
+  recognition/   leitura ITF e OCR
+  scoring/       associação, reconciliação e confiança
+  validation/    regras de boleto e conversões
+  extractor.ts   orquestração individual e em lote
+  index.ts       superfície pública
+bench/           fixtures sintéticas e benchmark determinístico
+docs/            documentação detalhada
 ```
 
-Também são exportados `parseBoletoCode`, `toBarcode`, `toDigitableLine`,
-`formatDigitableLine`, as três funções de dígito verificador e
-`BOLETO_ISSUE_CODES`.
-
-> Passar nos DVs confirma a consistência do código com o layout — **não** a
-> autenticidade, existência, quitação ou legitimidade do boleto. O pacote não
-> consulta bancos e não é ferramenta antifraude.
-
-## Limites e escopo
-
-- A rede é usada apenas para baixar a URL informada; nada é enviado a serviços
-  externos de OCR ou processamento.
-- Resultados estruturados não reproduzem caminhos, URLs, consultas, buffers nem
-  credenciais.
-- JavaScript embutido em PDF permanece desabilitado; PDFs com senha retornam
-  `PASSWORD_REQUIRED`.
-- Tamanho, páginas, pixels, texto, tempo e concorrência são limitados. Cada eixo
-  de imagem é limitado a 32.767 pixels.
-- **O pacote não é um filtro de SSRF.** Trate URLs de terceiros com política
-  própria de host, DNS/IP e redirecionamento.
-- Fora do escopo: HEIC/HEIF, TIFF, GIF, imagens multipágina e vídeo. O
-  pré-processamento não corrige perspectiva — fotos muito degradadas podem
-  terminar legitimamente em `not_found`.
-
-`precisionScore` é determinístico e versionado por `metadata.confidenceVersion`
-(hoje `"1.2.0"`), **não** uma probabilidade calibrada. Valide limiares em um
-corpus próprio antes de automatizar decisões.
+Não há servidor, banco de dados, rotas HTTP, controllers ou views neste projeto. URLs são apenas uma forma de entrada para documentos.
 
 ## Desenvolvimento
 
-```bash
-npm install
-npm run check   # typecheck + lint + format:check + build + test
-```
-
-O repositório não versiona arquivos de teste — `npm test` executa zero testes. A
-verificação real de que uma mudança em `src/` não alterou o resultado é o
-benchmark, que compara todo o JSON de saída exceto `durationMs`:
+Os scripts declarados no projeto cobrem verificação de tipos, lint, formatação, build, benchmark e auditoria:
 
 ```bash
-npm run build && node bench/run.mjs --repeats 3 --compare antes
+npm run typecheck
+npm run lint
+npm run format:check
+npm run build
 ```
 
-Detalhes em [`bench/README.md`](bench/README.md) e
-[docs/INSTALACAO.md](docs/INSTALACAO.md).
-
-## Referências
-
-- [Convenção da Cobrança FEBRABAN](https://cmsarquivos.febraban.org.br/Arquivos/documentos/PDF/Conven%C3%A7%C3%A3o%20da%20Cobran%C3%A7a%20-%2005_02_2021_f.pdf)
-- [Layout de Código de Barras de Arrecadação, versão 8](https://cmsarquivos.febraban.org.br/Arquivos/documentos/PDF/Layout%20-%20C%C3%B3digo%20de%20Barras%20-%20Vers%C3%A3o%208%20-%2011_05_2026.pdf)
-- [Especificação técnica do fator de vencimento](https://www.bb.com.br/docs/pub/emp/empl/dwn/Doc5175Bloqueto.pdf)
+A integração contínua executa essas verificações em Node.js 20, 22 e 24 e mantém uma etapa separada de auditoria de dependências. O benchmark usa documentos sintéticos e não versiona boletos reais; veja [bench/README.md](bench/README.md).
 
 ## Licença
 
-MIT. Veja [LICENSE](LICENSE).
+[MIT](LICENSE).

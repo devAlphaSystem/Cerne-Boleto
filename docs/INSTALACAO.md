@@ -2,127 +2,113 @@
 
 ## Requisitos
 
-| Item             | Exigência                                                        |
-| ---------------- | ---------------------------------------------------------------- |
-| Node.js          | 20 ou superior (CI valida em 20, 22 e 24)                        |
-| Sistema          | Windows, Linux ou macOS com binário `@napi-rs/canvas` disponível |
-| GPU              | Não é usada                                                      |
-| Tesseract        | Não precisa estar instalado no sistema                           |
-| Credenciais      | Nenhuma chave de API é exigida pelo pacote                       |
-| Rede em execução | Usada apenas se a entrada for uma URL HTTP/HTTPS                 |
+- Node.js `>=20`, conforme `engines.node` em [`package.json`](../package.json).
+- CPU e memória compatíveis com o tamanho dos documentos e com os limites do perfil escolhido.
+- Dependências nativas suportadas pelo ambiente para `@napi-rs/canvas`.
 
-O modelo de OCR em português (`@tesseract.js-data/por`) é instalado junto com o
-pacote e carregado do disco local. Não há download de modelo em tempo de
-execução nem uso da CDN padrão do Tesseract.
+O projeto é voltado ao runtime Node.js. Ele usa APIs de arquivo, `Buffer`, timers e módulos nativos; não é um pacote para execução direta no navegador.
 
-## Instalação como dependência
+## Instalar como dependência
 
 ```bash
 npm install cerne-boleto
 ```
 
-O pacote publica ESM e CommonJS com declarações de tipos para ambos:
+Importação ESM:
 
 ```ts
-import { extractBoletos } from "cerne-boleto";
+import { extractBoletos, validateBoletoCode } from "cerne-boleto";
 ```
+
+Importação CommonJS:
 
 ```js
-const { extractBoletos } = require("cerne-boleto");
+const { extractBoletos, validateBoletoCode } = require("cerne-boleto");
 ```
 
-O `package.json` declara `"sideEffects": false`, então bundlers podem eliminar
-código não utilizado. `engines.node` exige `>=20`.
+O manifesto publica as seguintes entradas:
 
-## Instalação da CLI
+| Uso            | Artefato           |
+| -------------- | ------------------ |
+| ESM            | `dist/index.js`    |
+| CommonJS       | `dist/index.cjs`   |
+| Tipos ESM      | `dist/index.d.ts`  |
+| Tipos CommonJS | `dist/index.d.cts` |
+| CLI            | `dist/cli.js`      |
 
-O pacote registra o binário `cerne-boleto`. Depois de instalar como dependência
-do projeto:
+Os artefatos em `dist/` são gerados; o código-fonte está em `src/`.
 
-```bash
-npx cerne-boleto ./boleto.pdf --pretty
-```
+O campo `files` do manifesto inclui `dist/`, `README.md` e `LICENSE`. Os guias
+em `docs/` e o benchmark permanecem disponíveis no repositório, mas não entram
+no pacote gerado pela configuração atual.
 
-Para uso global:
+## Instalar a CLI globalmente
 
 ```bash
 npm install --global cerne-boleto
+cerne-boleto --help
 ```
 
-Detalhes de argumentos e códigos de saída estão em [CLI.md](CLI.md).
+O executável aceita arquivos locais e URLs HTTP(S). Para enviar cabeçalhos HTTP customizados, use a API JavaScript; a CLI não expõe essa opção.
 
-## Dependências instaladas
+## Trabalhar a partir do repositório
 
-| Pacote                   | Papel                                                     |
-| ------------------------ | --------------------------------------------------------- |
-| `pdfjs-dist`             | Abertura de PDF, extração de texto nativo e renderização  |
-| `@napi-rs/canvas`        | Superfície de rasterização nativa usada nas renderizações |
-| `@zxing/library`         | Leitura do código de barras ITF                           |
-| `tesseract.js`           | Motor de OCR executado localmente em worker thread        |
-| `@tesseract.js-data/por` | Dados de idioma português usados pelo OCR                 |
-
-`@napi-rs/canvas` distribui binários pré-compilados por plataforma. Em sistemas
-sem binário publicado a instalação falha; nesse caso não existe fallback puro em
-JavaScript dentro deste pacote.
-
-## Desenvolvimento local
+Instalação reprodutível com o lockfile e geração da distribuição:
 
 ```bash
-git clone <repositorio>
-cd "Cerne Boleto"
-npm install
+npm ci
 npm run build
 ```
 
-O `postinstall` executa `patch-package`, que aplica `patches/prettier+3.9.4.patch`.
-Instalações com `--ignore-scripts` pulam essa etapa e o `npm run format:check`
-pode divergir do resultado esperado.
+Os scripts relevantes declarados em `package.json` são:
 
-### Scripts disponíveis
+| Script                   | Finalidade                                                             |
+| ------------------------ | ---------------------------------------------------------------------- |
+| `npm run build`          | gera biblioteca ESM/CommonJS, declarações, mapas e CLI com `tsup`      |
+| `npm run typecheck`      | verifica TypeScript sem emitir arquivos                                |
+| `npm run lint`           | executa ESLint                                                         |
+| `npm run format:check`   | verifica Prettier sem reescrever                                       |
+| `npm run check`          | encadeia tipos, lint, formatação e build                               |
+| `npm run bench:fixtures` | recria documentos sintéticos de benchmark                              |
+| `npm run bench`          | executa o benchmark com coleta de memória favorecida por `--expose-gc` |
+| `npm run security:audit` | executa auditoria de dependências                                      |
 
-| Script                   | O que faz                                                      |
-| ------------------------ | -------------------------------------------------------------- |
-| `npm run build`          | Gera ESM, CJS, `.d.ts`, sourcemaps e a CLI em `dist/` via tsup |
-| `npm run typecheck`      | `tsc --noEmit`                                                 |
-| `npm run lint`           | ESLint com `typescript-eslint`                                 |
-| `npm run format`         | Aplica o Prettier                                              |
-| `npm run format:check`   | Verifica a formatação sem escrever                             |
-| `npm test`               | `node --test`                                                  |
-| `npm run bench:fixtures` | Regenera as fixtures sintéticas em `bench/fixtures/`           |
-| `npm run bench`          | Executa o benchmark de tempo e de estabilidade de resultado    |
-| `npm run security:audit` | `npm audit --audit-level=low`                                  |
-| `npm run check`          | typecheck + lint + format:check + build + test, na ordem       |
+`prepare` aplica o patch versionado em [`patches/prettier+3.9.4.patch`](../patches/prettier+3.9.4.patch) por meio de `patch-package`.
 
-### Verificação de uma alteração
+## Dependências de runtime
 
-O repositório não versiona arquivos de teste: `npm test` hoje executa zero
-testes e termina com sucesso de forma vacuosa. A garantia real de que uma
-mudança em `src/` não alterou o resultado da extração vem do benchmark, que
-compara todo o JSON de saída exceto `durationMs`:
+| Dependência              | Papel no pipeline                                         |
+| ------------------------ | --------------------------------------------------------- |
+| `pdfjs-dist`             | parsing, texto e renderização de PDF                      |
+| `@napi-rs/canvas`        | canvas e decodificação/renderização de imagens no Node.js |
+| `@zxing/library`         | leitura do código de barras ITF                           |
+| `tesseract.js`           | OCR local                                                 |
+| `@tesseract.js-data/por` | dados de idioma português usados pelo OCR                 |
 
-```bash
-npm run build && node bench/run.mjs --repeats 3 --save antes
-```
+O OCR é executado localmente. O pacote não envia imagens a um serviço de OCR; a única requisição de documento feita pela biblioteca ocorre quando a própria entrada é uma URL HTTP(S).
 
-Depois de alterar `src/`:
+## Compatibilidade e integração contínua
 
-```bash
-npm run build && node bench/run.mjs --repeats 3 --compare antes
-```
+O CI do repositório verifica Node.js 20, 22 e 24 em Linux e executa tipos, lint, formatação e build. O requisito público permanece Node.js 20 ou superior; outros sistemas operacionais e arquiteturas dependem da disponibilidade das dependências instaladas.
 
-Qualquer divergência em `results`, `precisionScore`, `warnings` ou `metadata` é
-listada e o processo sai com código `1`. Consulte [`bench/README.md`](../bench/README.md).
+Consulte [`../.github/workflows/ci.yml`](../.github/workflows/ci.yml) para a matriz atual.
 
-### Integração contínua
+## Falhas comuns de instalação
 
-`.github/workflows/ci.yml` roda `typecheck`, `lint`, `format:check`, `build` e
-`test` na matriz Node 20/22/24, e `security:audit` em um job separado.
+### Engine incompatível
 
-## Desinstalação
+Confirme `node --version`. Versões anteriores à 20 estão fora do contrato declarado.
 
-```bash
-npm uninstall cerne-boleto
-```
+### Falha ao carregar canvas nativo
 
-O pacote não grava arquivos fora de `node_modules`, não cria diretórios de cache
-próprios e não persiste documentos em disco.
+O pipeline de renderização depende de `@napi-rs/canvas`. Confirme que a plataforma possui um artefato compatível e que a instalação de dependências foi concluída sem omissões de pacotes necessários ao ambiente.
+
+### `dist/` ausente em um checkout local
+
+`src/` contém TypeScript e `dist/` não é versionado. Gere os artefatos com `npm run build` antes de importar diretamente a distribuição local ou executar `bench/run.mjs`.
+
+### OCR não inicializa
+
+Confirme que `tesseract.js` e `@tesseract.js-data/por` estão instalados. Como o idioma português é carregado do pacote local com cache desabilitado, uma instalação incompleta impede a criação da sessão OCR.
+
+Para falhas durante a extração, identifique `error.code` no resultado e consulte os [códigos de erro da API](API.md#códigos-de-erro-de-extração).

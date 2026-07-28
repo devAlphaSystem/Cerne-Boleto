@@ -153,6 +153,36 @@ function invalidOptionsResult(error: InvalidOptionsError, startedAt: MonotonicTi
   return failureResult("INVALID_OPTIONS", error.message, resolveOptions(), startedAt);
 }
 
+/**
+ * Runs one synchronous cleanup step without letting it replace the structured result.
+ *
+ * Cleanup runs in `finally`, after the outcome is already decided. A throwing step must neither
+ * reject the promise the contract promises to resolve nor prevent the remaining steps from running.
+ *
+ * @param {() => void} step - The release operation to attempt.
+ */
+function disposeQuietly(step: () => void): void {
+  try {
+    step();
+  } catch {
+    return;
+  }
+}
+
+/**
+ * Runs one asynchronous cleanup step without letting it replace the structured result.
+ *
+ * @param {() => Promise<void> | void} step - The release operation to attempt.
+ * @returns {Promise<void>} Resolves after the step settles, successfully or not.
+ */
+async function releaseQuietly(step: () => Promise<void> | void): Promise<void> {
+  try {
+    await step();
+  } catch {
+    return;
+  }
+}
+
 class PageCursor {
   readonly #handle: DocumentHandle;
   #pageNumber = 0;
@@ -172,8 +202,9 @@ class PageCursor {
   }
 
   public release(): void {
-    this.#page?.cleanup();
+    const page = this.#page;
     this.#page = null;
+    page?.cleanup();
   }
 }
 
@@ -465,7 +496,7 @@ export async function extractBoletos(input: DocumentInput, optionsInput: Extract
   }
 
   const state = emptyState();
-  const guard = new WorkGuard(options, startedAt);
+  let guard: WorkGuard | null = null;
   let handle: DocumentHandle | null = null;
   let ocrSession: OcrSession | null = null;
   let cursor: PageCursor | null = null;
@@ -473,6 +504,7 @@ export async function extractBoletos(input: DocumentInput, optionsInput: Extract
   let result: ExtractionResult;
 
   try {
+    guard = new WorkGuard(options, startedAt);
     guard.check();
     const loaded = await loadDocumentInput(input, options.maxFileSizeBytes, {
       ...(options.requestHeaders === undefined ? {} : { requestHeaders: options.requestHeaders }),
@@ -512,7 +544,7 @@ export async function extractBoletos(input: DocumentInput, optionsInput: Extract
     state.complete = false;
     let resolvedError: unknown = error;
     try {
-      guard.check();
+      guard?.check();
     } catch (guardError) {
       resolvedError = guardError;
     }
@@ -522,10 +554,10 @@ export async function extractBoletos(input: DocumentInput, optionsInput: Extract
       message: failure.message,
     });
   } finally {
-    guard.dispose();
-    reuse?.dispose();
-    cursor?.release();
-    await Promise.all([ocrSession?.terminate().catch(() => undefined), handle?.close().catch(() => undefined)]);
+    disposeQuietly(() => guard?.dispose());
+    disposeQuietly(() => reuse?.dispose());
+    disposeQuietly(() => cursor?.release());
+    await Promise.all([releaseQuietly(() => ocrSession?.terminate()), releaseQuietly(() => handle?.close())]);
   }
   return finalizeResultDuration(result, startedAt);
 }

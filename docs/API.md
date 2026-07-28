@@ -1,147 +1,85 @@
-# API
+# Referência da API
 
-Referência completa da superfície pública de `cerne-boleto`. Para exemplos
-executáveis, veja [EXEMPLOS.md](EXEMPLOS.md); para a linha de comando, veja
-[CLI.md](CLI.md).
+A superfície pública é definida por [`src/index.ts`](../src/index.ts). O pacote exporta duas operações de extração, oito helpers de boleto, a constante de códigos de validação e os tipos associados.
 
-## Superfície exportada
+## Importação
 
 ```ts
-import {
-  // Extração
-  extractBoletos,
-  extractBoletoBatch,
-  // Validação e conversão
-  validateBoletoCode,
-  parseBoletoCode,
-  toBarcode,
-  toDigitableLine,
-  formatDigitableLine,
-  calculateModulo10CheckDigit,
-  calculateCobrancaBarcodeCheckDigit,
-  calculateArrecadacaoModulo11CheckDigit,
-  BOLETO_ISSUE_CODES,
-} from "cerne-boleto";
+import { extractBoletoBatch, extractBoletos, formatDigitableLine, parseBoletoCode, toBarcode, toDigitableLine, validateBoletoCode } from "cerne-boleto";
 ```
 
-Tudo o mais é interno. `ResolvedOptions`, `RenderRecipe`, `InvalidOptionsError`,
-`ExtractionFailure` e os módulos de `document/`, `pdf/`, `recognition/`,
-`candidates/` e `scoring/` não fazem parte do contrato público e podem mudar sem
-aviso.
+## Entradas aceitas
 
----
+```ts
+type DocumentInput = string | ArrayBuffer | Uint8Array;
+type DocumentFormat = "pdf" | "jpeg" | "png";
+```
 
-## Extração
+Uma `string` é interpretada como URL somente quando começa com `http://` ou `https://` (sem diferenciar maiúsculas de minúsculas); nos demais casos, é tratada como caminho local. `Buffer` é aceito em runtime e em TypeScript por ser uma subclasse de `Uint8Array`.
 
-### `extractBoletos(input, options?)`
+O formato é detectado pela assinatura dos bytes, não pela extensão nem pelo `Content-Type`: PNG usa a assinatura completa, JPEG começa por `FF D8 FF` e PDF deve conter `%PDF-` nos primeiros 1.024 bytes.
+
+## `extractBoletos`
 
 ```ts
 function extractBoletos(input: DocumentInput, options?: ExtractOptions): Promise<ExtractionResult>;
 ```
 
-Extrai boletos validados de uma única fonte. **A promise não é rejeitada por
-falha de processamento**: erros esperados chegam em `result.error` com um
-`ExtractionErrorCode` estável. Apenas defeitos de programação fora do contrato
-podem escapar.
+Carrega um documento, busca evidências de boleto, valida cada código, associa campos visíveis e devolve um resultado estruturado. Falhas de opções, entrada, download, parsing, prazo ou processamento são convertidas em `ExtractionResult.error`; o fluxo normal do consumidor deve inspecionar o resultado resolvido.
 
-`input` aceita:
-
-| Forma                      | Observação                                            |
-| -------------------------- | ----------------------------------------------------- |
-| `string` com caminho local | Caminho de arquivo resolvido pelo sistema de arquivos |
-| `string` com URL           | Somente `http://` e `https://` completos              |
-| `ArrayBuffer`              | Bytes em memória                                      |
-| `Uint8Array` / `Buffer`    | Bytes em memória (`Buffer` é um `Uint8Array`)         |
-
-O formato é decidido pela assinatura real dos bytes — PDF, JPEG ou PNG.
-Extensão do arquivo e `Content-Type` da resposta não influenciam a aceitação.
-
-### `extractBoletoBatch(inputs, options?)`
+### Exemplo
 
 ```ts
-function extractBoletoBatch(inputs: readonly BoletoBatchInput[], options?: BatchExtractOptions): Promise<BatchExtractionResult>;
-```
+const result = await extractBoletos("./boleto.pdf", {
+  performance: "balanced",
+  ocr: "fallback",
+  maxPages: 20,
+  timeoutMs: 90_000,
+});
 
-Processa várias fontes com concorrência limitada, preservando a ordem das
-entradas no resultado. Também não rejeita: falhas de lote e falhas por fonte
-aparecem no envelope retornado.
-
-Cada elemento de `inputs` é um `DocumentInput` direto ou um descritor:
-
-```ts
-interface BoletoBatchSourceDescriptor {
-  input: DocumentInput;
-  requestHeaders?: Readonly<Record<string, string>>;
+if (result.success) {
+  console.log(result.bestMatch?.formattedDigitableLine);
 }
 ```
 
-Os cabeçalhos pertencem a **uma** entrada. Não existe `requestHeaders` global no
-lote, o que impede que a credencial de uma origem vaze para outra.
+## Opções de extração
 
----
+| Opção                  | Tipo                                 | Padrão              | Faixa/valores                | Efeito                                                                 |
+| ---------------------- | ------------------------------------ | ------------------- | ---------------------------- | ---------------------------------------------------------------------- |
+| `performance`          | `"fast" \| "balanced" \| "accurate"` | `"balanced"`        | valores listados             | seleciona os padrões de passes, OCR, páginas, pixels e prazo           |
+| `passes`               | `number` inteiro                     | perfil              | 1 a 5                        | limita as receitas de renderização por página                          |
+| `ocr`                  | `"never" \| "fallback" \| "always"`  | perfil              | valores listados             | desabilita OCR, usa em páginas sem evidência/texto nativo ou força OCR |
+| `maxPages`             | `number` inteiro                     | perfil              | 1 a 10.000                   | limita as páginas processadas por documento                            |
+| `maxFileSizeBytes`     | `number` inteiro                     | 31.457.280 (30 MiB) | 1 a 1.073.741.824            | limita arquivo local, bytes em memória e download                      |
+| `maxPixelsPerPage`     | `number` inteiro                     | perfil              | 250.000 a 100.000.000        | limita a área de cada superfície renderizada                           |
+| `maxSourceImagePixels` | `number` inteiro                     | perfil              | 250.000 a 200.000.000        | limita a área declarada/decodificada da imagem-fonte                   |
+| `timeoutMs`            | `number` inteiro                     | perfil              | 0 a 3.600.000                | prazo da extração; zero desabilita                                     |
+| `stopAfterFirst`       | `boolean`                            | `false`             | `true`/`false`               | interrompe páginas/passes restantes após a primeira evidência válida   |
+| `requestHeaders`       | `Readonly<Record<string, string>>`   | ausente             | nomes e valores HTTP válidos | cabeçalhos usados somente em uma entrada HTTP(S)                       |
+| `signal`               | `AbortSignal`                        | ausente             | sinal válido                 | cancela carregamento e processamento                                   |
 
-## Opções
-
-### `ExtractOptions`
-
-| Opção                  | Tipo                                 | Padrão              | Faixa aceita               |
-| ---------------------- | ------------------------------------ | ------------------- | -------------------------- |
-| `performance`          | `"fast" \| "balanced" \| "accurate"` | `"balanced"`        | —                          |
-| `passes`               | `number`                             | do perfil           | `1..5`                     |
-| `ocr`                  | `"never" \| "fallback" \| "always"`  | do perfil           | —                          |
-| `maxPages`             | `number`                             | do perfil           | `1..10000`                 |
-| `maxFileSizeBytes`     | `number`                             | `31457280` (30 MiB) | `1..1073741824` (1 GiB)    |
-| `maxPixelsPerPage`     | `number`                             | do perfil           | `250000..100000000`        |
-| `maxSourceImagePixels` | `number`                             | do perfil           | `250000..200000000`        |
-| `timeoutMs`            | `number`                             | do perfil           | `0..3600000` (`0` desliga) |
-| `stopAfterFirst`       | `boolean`                            | `false`             | —                          |
-| `requestHeaders`       | `Readonly<Record<string,string>>`    | nenhum              | somente com URL            |
-| `signal`               | `AbortSignal`                        | nenhum              | —                          |
-
-Valores fora da faixa produzem `error.code === "INVALID_OPTIONS"`. Os limites
-são conferidos com `Number.isInteger`, então valores fracionários são recusados.
-
-### Perfis de desempenho
+### Padrões por perfil
 
 | Perfil     | `passes` | `ocr`      | `maxPages` | `maxPixelsPerPage` | `maxSourceImagePixels` | `timeoutMs` |
-| ---------- | -------- | ---------- | ---------- | ------------------ | ---------------------- | ----------- |
-| `fast`     | 1        | `never`    | 10         | 8.000.000          | 40.000.000             | 30.000      |
-| `balanced` | 2        | `fallback` | 30         | 12.000.000         | 60.000.000             | 120.000     |
-| `accurate` | 3        | `fallback` | 50         | 20.000.000         | 100.000.000            | 300.000     |
+| ---------- | -------: | ---------- | ---------: | -----------------: | ---------------------: | ----------: |
+| `fast`     |        1 | `never`    |         10 |          8.000.000 |             40.000.000 |      30.000 |
+| `balanced` |        2 | `fallback` |         30 |         12.000.000 |             60.000.000 |     120.000 |
+| `accurate` |        3 | `fallback` |         50 |         20.000.000 |            100.000.000 |     300.000 |
 
-O perfil define apenas os padrões. Qualquer opção informada explicitamente
-prevalece — `{ performance: "fast", ocr: "always" }` é uma combinação válida.
+As opções individuais substituem apenas o respectivo padrão do perfil. Por exemplo, `{ performance: "fast", ocr: "always" }` mantém os demais limites de `fast` e força OCR.
 
-### `requestHeaders`
+### Cabeçalhos HTTP
 
-Aceito somente quando `input` é uma URL HTTP/HTTPS e somente com valores string.
-Nomes são normalizados para minúsculas e validados com `validateHeaderName` /
-`validateHeaderValue` do Node.js. São recusados:
-
-- nomes duplicados quando comparados sem diferenciar maiúsculas;
-- objetos com protótipo diferente de `Object.prototype` ou `null`;
-- os cabeçalhos reservados pelo componente de download:
+O objeto deve ser um objeto simples, todos os valores devem ser strings e nomes duplicados sem considerar caixa são rejeitados. Estes cabeçalhos não podem ser sobrescritos:
 
 ```text
 accept-encoding, connection, content-length, expect, host, if-range,
 keep-alive, proxy-connection, range, te, trailer, transfer-encoding, upgrade
 ```
 
-### `BatchExtractOptions`
+`accept-encoding: identity` é definido internamente. Cabeçalhos fornecidos pelo chamador são removidos quando um redirecionamento muda de origem ou faz downgrade de HTTPS para HTTP.
 
-```ts
-type BatchExtractOptions = Omit<ExtractOptions, "requestHeaders" | "signal"> & {
-  concurrency?: number; // 1..8, padrão 1
-  signal?: AbortSignal; // único para o lote inteiro
-};
-```
-
-O `signal` do lote cancela cooperativamente as extrações em andamento e impede
-o início de novas entradas.
-
----
-
-## Resultado de uma fonte
+## `ExtractionResult`
 
 ```ts
 interface ExtractionResult {
@@ -156,229 +94,45 @@ interface ExtractionResult {
 }
 ```
 
-### Como `status` é decidido
+### Semântica de status
 
-| Condição                                                | `status`      |
-| ------------------------------------------------------- | ------------- |
-| Houve erro terminal e nenhum boleto foi validado        | `"error"`     |
-| Houve erro terminal mas ao menos um boleto foi validado | `"partial"`   |
-| A varredura não completou (ex.: corte por `maxPages`)   | `"partial"`   |
-| Varredura completa, ao menos um boleto validado         | `"success"`   |
-| Varredura completa, nenhum boleto validado              | `"not_found"` |
+| Status      | Significado na extração individual                                                                             |
+| ----------- | -------------------------------------------------------------------------------------------------------------- |
+| `success`   | ao menos um boleto foi encontrado e a política de término foi cumprida sem erro nem truncamento por `maxPages` |
+| `not_found` | processamento completo, sem boleto válido                                                                      |
+| `partial`   | há resultados apesar de erro terminal, ou a execução terminou incompleta, por exemplo por `maxPages`           |
+| `error`     | erro terminal sem nenhum resultado válido                                                                      |
 
-`success` é independente de `status`: vale `true` sempre que `results` não está
-vazio, inclusive em `"partial"`.
+`success` indica apenas se `results` contém ao menos um boleto. Portanto, também pode ser `true` quando `status === "partial"`.
 
-`precisionScore` no topo é **conservador** — corresponde à **menor** pontuação
-entre os itens de `results`, não à do `bestMatch`. Quando `results` está vazio,
-vale `0`.
+`bestMatch` é o primeiro boleto após ordenação por maior confiança, primeira página e código. `precisionScore` no nível do resultado é a menor confiança entre os boletos retornados, arredondada a três casas; quando não há resultados, vale zero.
 
-### `ExtractedBoleto`
+## `ExtractedBoleto`
 
-```ts
-interface ExtractedBoleto {
-  barcode: string; // canônico, 44 dígitos
-  digitableLine: string; // canônico, 47 ou 48 dígitos, sem formatação
-  formattedDigitableLine: string; // apresentação canônica com pontos e espaços
-  layout: "cobranca" | "arrecadacao";
-  isValid: true; // literal: só entra em results o que é válido
-  precisionScore: number; // 0..1
-  pages: number[]; // 1-based; imagens sempre [1]
-  sources: ExtractionSource[];
-  occurrences: number;
-  components: BoletoComponents;
-  generalInfo: BoletoGeneralInfo;
-}
-```
+| Campo                    | Significado                                               |
+| ------------------------ | --------------------------------------------------------- |
+| `barcode`                | representação canônica de 44 dígitos                      |
+| `digitableLine`          | linha canônica sem formatação, com 47 ou 48 dígitos       |
+| `formattedDigitableLine` | linha com espaços e pontuação canônicos                   |
+| `layout`                 | `"cobranca"` ou `"arrecadacao"`                           |
+| `isValid`                | sempre `true` para um item retornado                      |
+| `precisionScore`         | confiança consolidada, de 0 a 1                           |
+| `pages`                  | páginas de evidência, numeradas a partir de 1             |
+| `sources`                | fontes distintas em ordem estável                         |
+| `occurrences`            | ocorrências após deduplicação espacial por página e fonte |
+| `components`             | campos codificados, específicos do layout                 |
+| `generalInfo`            | campos codificados e visíveis reconciliados               |
 
-`isValid` é o literal `true`, não `boolean`: um boleto que não passe
-integralmente por formato, semântica e dígitos verificadores nunca entra em
-`results`.
+`sources` pode conter:
 
-`ExtractionSource` é `"pdf-text" | "pdf-text-reconstructed" | "itf" | "ocr"`.
+- `pdf-text`: ordem de itens da camada de texto do PDF;
+- `pdf-text-reconstructed`: linhas reconstruídas por posição;
+- `itf`: código de barras ITF decodificado;
+- `ocr`: texto reconhecido pelo Tesseract.
 
-`occurrences` conta evidências físicas consolidadas. Filtros, escalas e rotações
-aplicados aos mesmos pixels não viram ocorrências novas; ITF e OCR permanecem
-fontes independentes. Dentro de um documento, a deduplicação usa o código de
-barras canônico de 44 dígitos, então a linha digitável e o ITF correspondentes
-não geram dois resultados.
+### Informações gerais
 
-### `ExtractionMetadata`
-
-| Campo                  | Significado                                                            |
-| ---------------------- | ---------------------------------------------------------------------- |
-| `performance`          | Perfil resolvido                                                       |
-| `ocrMode`              | Modo de OCR resolvido                                                  |
-| `inputFormat?`         | `"pdf"`, `"jpeg"` ou `"png"`; ausente se a falha antecede a detecção   |
-| `passesRequested`      | Passagens visuais configuradas                                         |
-| `passesUsed`           | Passagem mais profunda efetivamente alcançada                          |
-| `pagesTotal`           | Páginas declaradas pelo documento; sempre `1` em imagem                |
-| `pagesProcessed`       | Páginas cuja etapa de texto nativo foi executada                       |
-| `pagesRendered`        | Páginas distintas rasterizadas                                         |
-| `renderAttempts?`      | Renderizações pedidas, incluindo reaproveitamento de superfície pronta |
-| `ocrPages`             | Páginas distintas submetidas ao OCR                                    |
-| `fileSizeBytes`        | Bytes da fonte carregada                                               |
-| `sourceImageWidth?`    | Largura decodificada original (somente JPEG/PNG)                       |
-| `sourceImageHeight?`   | Altura decodificada original (somente JPEG/PNG)                        |
-| `maxPixelsPerPage`     | Limite resolvido por página renderizada                                |
-| `maxSourceImagePixels` | Limite resolvido da imagem de origem                                   |
-| `durationMs`           | Tempo total decorrido                                                  |
-| `complete`             | `false` quando houve erro ou truncamento por `maxPages`                |
-| `confidenceVersion`    | Literal `"1.2.0"` — versão do contrato de pontuação                    |
-
-Fixe `confidenceVersion` se o seu sistema depende de limiares numéricos: uma
-mudança nesse valor sinaliza que as pontuações foram recalibradas.
-
-### `ExtractionErrorInfo`
-
-```ts
-interface ExtractionErrorInfo {
-  code: ExtractionErrorCode;
-  message: string;
-}
-```
-
-| Código               | Quando ocorre                                           |
-| -------------------- | ------------------------------------------------------- |
-| `INVALID_INPUT`      | Entrada não é caminho, URL aceita nem bytes válidos     |
-| `FILE_NOT_FOUND`     | Caminho local inexistente ou ilegível                   |
-| `FILE_TOO_LARGE`     | Excede `maxFileSizeBytes` (declarado ou recebido)       |
-| `DOWNLOAD_ERROR`     | Falha de rede, HTTP ou excesso de redirecionamentos     |
-| `INVALID_OPTIONS`    | Opção fora da faixa aceita ou cabeçalho recusado        |
-| `INVALID_PDF`        | Bytes de PDF corrompidos ou não abríveis                |
-| `UNSUPPORTED_FORMAT` | Assinatura de bytes fora de PDF, JPEG e PNG             |
-| `INVALID_IMAGE`      | JPEG/PNG malformado ou fora dos limites de dimensão     |
-| `PASSWORD_REQUIRED`  | PDF criptografado; o pacote não oferece opção de senha  |
-| `TIMEOUT`            | `timeoutMs` esgotado                                    |
-| `ABORTED`            | `signal` disparado                                      |
-| `RESOURCE_LIMIT`     | Limite de pixels, texto ou recurso interno atingido     |
-| `PROCESSING_ERROR`   | Falha inesperada já convertida em resultado estruturado |
-
-Nem `message` nem qualquer outro campo reproduzem caminhos, URLs, strings de
-consulta, buffers ou valores de cabeçalho.
-
----
-
-## Resultado de lote
-
-```ts
-interface BatchExtractionResult {
-  status: ExtractionStatus;
-  success: boolean;
-  precisionScore: number;
-  bestMatch: BatchMatchedBoleto | null;
-  results: BatchMatchedBoleto[];
-  metadata: ExtractionMetadata;
-  items: BatchExtractionItem[];
-  summary: BatchExtractionSummary;
-  warnings: string[];
-  error: ExtractionErrorInfo | null;
-}
-```
-
-`BatchMatchedBoleto` é `{ inputIndex: number; boleto: ExtractedBoleto }` e
-`BatchExtractionItem` é `{ inputIndex: number; result: ExtractionResult }`.
-`inputIndex` é a posição zero-based na array original — é o único vínculo com a
-fonte, já que caminhos, URLs e buffers não são reproduzidos.
-
-### `status` do lote
-
-| Condição                                                      | `status`      |
-| ------------------------------------------------------------- | ------------- |
-| Há boletos e nenhuma entrada parcial ou com erro              | `"success"`   |
-| Há boletos e existe ao menos uma entrada parcial ou com erro  | `"partial"`   |
-| Sem boletos, com ao menos uma entrada parcial                 | `"partial"`   |
-| Sem boletos e sem parciais, com ao menos uma entrada com erro | `"error"`     |
-| Sem boletos, todas as varreduras completas                    | `"not_found"` |
-
-Quando a validação do próprio lote falha (por exemplo, `concurrency` inválida),
-`items` volta vazio e `summary.inputsFailed` conta **todas** as entradas.
-
-### `BatchExtractionSummary`
-
-```ts
-interface BatchExtractionSummary {
-  inputsTotal: number;
-  inputsSucceeded: number; // itens com status "success"
-  inputsNotFound: number;
-  inputsPartial: number;
-  inputsFailed: number; // itens com status "error"
-  boletosFound: number;
-  concurrency: number;
-  durationMs: number;
-}
-```
-
-`metadata` do lote consolida páginas, bytes, renderizações e OCR de todas as
-entradas. `sourceImageWidth` e `sourceImageHeight` não aparecem no metadado
-agregado de um lote misto. `warnings` do lote prefixa cada aviso com
-`Input <índice>:`.
-
-Não há deduplicação entre arquivos: o mesmo boleto presente em duas fontes
-aparece duas vezes, com `inputIndex` distintos.
-
----
-
-## `components`: decomposição do código
-
-`components` é uma união discriminada por `layout`.
-
-### `CobrancaBoletoComponents` (`layout: "cobranca"`)
-
-| Campo                                                  | Conteúdo                                          |
-| ------------------------------------------------------ | ------------------------------------------------- |
-| `normalizedValue`                                      | Entrada sem separadores de apresentação           |
-| `representation`                                       | `"barcode"` ou `"digitable-line"`                 |
-| `barcode` / `digitableLine` / `formattedDigitableLine` | Formas canônicas                                  |
-| `variant`                                              | `"bank-code"` ou `"ispb"`                         |
-| `institutionCode`                                      | Três dígitos                                      |
-| `currencyCode`                                         | Um dígito                                         |
-| `ispb` / `ispbField`                                   | Preenchidos apenas na variante `ispb`             |
-| `dueDateFactor`                                        | Quatro dígitos na variante `bank-code`            |
-| `dueDate`                                              | `YYYY-MM-DD` selecionada, ou `null`               |
-| `dueDateCandidates`                                    | Todas as datas compatíveis com o fator            |
-| `dueDateAssumption`                                    | `"2025-reset-cycle"` quando o ciclo foi presumido |
-| `amountField` / `amountCents`                          | Valor codificado; centavos como **string**        |
-| `freeField`                                            | 25 dígitos                                        |
-| `generalCheckDigit` / `expectedGeneralCheckDigit`      | DV geral presente e calculado                     |
-| `fieldCheckDigits` / `expectedFieldCheckDigits`        | Trinca de DVs de campo                            |
-
-Na variante `bank-code`, `currencyCode` deve ser `9` (Real). Na variante `ispb`
-(instituição `988`), a posição 4 deve ser `0` e o bloco seguinte contém seis
-zeros seguidos de um ISPB de oito dígitos diferente de zero; fator e valor não
-são inferidos desse bloco.
-
-**Fator de vencimento.** O fator `1000` passou a representar `2025-02-22` no
-ciclo reiniciado, mas fatores a partir de `1000` também podem corresponder a uma
-data do ciclo histórico. Quando existe data impressa geometricamente associada
-ao boleto, ela é cruzada com `dueDateCandidates`. Sem confirmação impressa, o
-ciclo reiniciado é adotado e registrado em `dueDateAssumption`. Uma data externa
-conflitante não substitui silenciosamente o que está codificado.
-
-### `ArrecadacaoBoletoComponents` (`layout: "arrecadacao"`)
-
-| Campo                                                   | Conteúdo                                     |
-| ------------------------------------------------------- | -------------------------------------------- |
-| `productCode`                                           | Deve ser `8`                                 |
-| `segmentCode` / `segmentName`                           | Dígito e categoria normalizada               |
-| `valueIdentifier` / `valueType`                         | Identificador e `"amount"` ou `"reference"`  |
-| `checkDigitAlgorithm`                                   | `"modulo10"` ou `"modulo11"`                 |
-| `valueField` / `amountCents` / `referenceValue`         | Campo de 11 dígitos e sua interpretação      |
-| `organizationIdentifier` / `organizationIdentifierType` | Empresa/órgão e como lê-lo                   |
-| `freeField`                                             | Restante dependente do segmento              |
-| `dueDate`                                               | Data no início do campo livre, quando válida |
-
-Segmentos aceitos: `1`, `2`, `3`, `4`, `5`, `6`, `7` e `9`.
-`segmentName` mapeia para `city-government`, `sanitation`, `energy-and-gas`,
-`telecommunications`, `government-agencies`, `payment-slips-and-similar`,
-`traffic-fines` e `bank-exclusive`.
-Identificadores de valor: `6` e `8` indicam valor efetivo; `7` e `9`, referência.
-`6` e `7` usam módulo 10; `8` e `9`, módulo 11.
-`organizationIdentifierType` pode ser `febraban-code`, `cnpj-root` ou `bank-code`.
-
----
-
-## `generalInfo`: campos visíveis
+`generalInfo` contém os campos abaixo. Qualquer campo sem evidência confiável permanece `null`.
 
 ```ts
 interface BoletoGeneralInfo {
@@ -386,233 +140,179 @@ interface BoletoGeneralInfo {
   beneficiary: BoletoPartyInfo | null;
   finalBeneficiary: BoletoPartyInfo | null;
   payer: BoletoPartyInfo | null;
-  dueDate: ExtractedBoletoField | null;
-  amount: ExtractedBoletoField | null;
+  dueDate: ExtractedBoletoField | null; // YYYY-MM-DD
+  amount: ExtractedBoletoField | null; // decimal com ponto, sem moeda
   ourNumber: ExtractedBoletoField | null;
   documentNumber: ExtractedBoletoField | null;
-  documentDate: ExtractedBoletoField | null;
-}
-
-interface BoletoPartyInfo {
-  name: ExtractedBoletoField | null;
-  taxId: ExtractedBoletoField | null;
-}
-
-interface ExtractedBoletoField<TValue extends string = string> {
-  value: TValue; // normalizado
-  rawValue: string; // como aparecia na origem
-  precisionScore: number;
-  pages: number[];
-  sources: BoletoFieldSource[]; // "encoded" | "pdf-text" | "ocr"
+  documentDate: ExtractedBoletoField | null; // YYYY-MM-DD
 }
 ```
 
-Normalizações: datas em `YYYY-MM-DD`; valores monetários como string decimal sem
-símbolo de moeda; CPF e CNPJ sem pontuação, com CNPJ numérico ou alfanumérico.
-Strings são preservadas para não perder zeros à esquerda nem introduzir
-arredondamento binário.
+Cada `ExtractedBoletoField` preserva `value`, `rawValue`, `precisionScore`, páginas e fontes (`encoded`, `pdf-text` ou `ocr`). Beneficiário, beneficiário final e pagador contêm `name` e `taxId` independentes.
 
-**Associação geométrica.** Linhas do texto nativo e blocos do OCR preservam
-coordenadas. Com mais de um boleto na página, o campo visível é atribuído ao
-boleto geometricamente mais próximo. Texto sem posição só vira informação da
-página inteira quando existe exatamente um boleto nela. Rótulos em coluna são
-resolvidos pela posição: mesma linha primeiro, célula abaixo em seguida.
-Rótulos dentro de frases padrão como "uso do banco" não criam campos.
+Valor e vencimento codificados têm precedência sobre texto visível, salvo a regra de desambiguação do fator de vencimento. Conflitos relevantes são preservados em `warnings`, não mascarados por um valor alternativo.
 
-**Instituição.** Na cobrança com variante bancária, o nome vem do código
-codificado através de um catálogo embutido de 26 emissores comuns — nesse caso
-`sources` contém `"encoded"`. Códigos fora do catálogo caem no rótulo impresso.
+### Componentes de cobrança
 
-**Conflitos.** Valores repetidos que diferem apenas por truncamento de quebra de
-linha são consolidados no mais completo. Quando valores realmente distintos
-competem, uma maioria estrita resolve o campo de forma determinística, a
-pontuação fica limitada a `0.95` e um aviso é emitido. Sem maioria, o campo
-permanece `null`.
+`CobrancaBoletoComponents` inclui, além dos campos comuns:
 
-**Heurística de arrecadação.** Em contas de arrecadação, blocos não rotulados de
-nome e endereço ancorados por um CEP também identificam as partes: o bloco com
-CNPJ válido ou sufixo societário nomeia o beneficiário, os demais nomeiam o
-pagador. Esses campos têm pontuação máxima de `0.9`, nunca são usados em
-cobrança e cedem ao rótulo correspondente quando ele existe.
+- `variant`: `bank-code` ou `ispb`;
+- `institutionCode`, `currencyCode`, `generalCheckDigit` e dígitos calculados;
+- `ispb` e `ispbField` para a variante ISPB;
+- `dueDateFactor`, `dueDate`, `dueDateCandidates` e `dueDateAssumption` para a variante bancária;
+- `amountField`, `amountCents` e `freeField`.
 
-Quando o nome impresso de uma parte contém CPF ou CNPJ com DV válido, o
-documento é separado do nome e atribuído ao `taxId` da mesma parte.
+Fator `0000` não codifica data. Fatores a partir de `1000` possuem uma data histórica e uma data no ciclo reiniciado em 22/02/2025; o parser escolhe o ciclo de 2025 e registra `dueDateAssumption: "2025-reset-cycle"`. Durante a extração, uma data impressa compatível pode desambiguar o fator.
 
----
+### Componentes de arrecadação
 
-## Pontuação
+`ArrecadacaoBoletoComponents` inclui:
 
-`precisionScore` é determinístico e versionado por `metadata.confidenceVersion`.
-Texto nativo, texto reconstruído, ITF e OCR partem de bases diferentes; fontes
-independentes que concordam elevam a confiança. **Não é uma probabilidade
-calibrada estatisticamente.** Meça precisão e recall em um corpus próprio
-representativo antes de fixar um limiar de automação.
+- `productCode`, `segmentCode` e `segmentName`;
+- `valueIdentifier`, `valueType` (`amount`/`reference`) e `checkDigitAlgorithm` (`modulo10`/`modulo11`);
+- `valueField`, `amountCents` ou `referenceValue`;
+- `organizationIdentifier`, seu tipo e o `freeField` restante;
+- `dueDate` quando os oito primeiros dígitos do campo livre formam uma data `YYYYMMDD` válida.
 
-Todo item de `results` já passou pela validação integral do código. Campos
-visíveis nunca criam um boleto: um beneficiário ou um valor isolado não produz
-resultado.
+Segmentos aceitos: `1`, `2`, `3`, `4`, `5`, `6`, `7` e `9`. Identificadores de valor aceitos: `6`, `7`, `8` e `9`.
 
----
+## Metadados
 
-## Validação e conversão independentes
+`ExtractionMetadata` permite observar configuração, consumo e completude:
 
-Estas funções são síncronas, puras e não carregam PDF, canvas ou OCR.
+| Campo                                      | Conteúdo                                                                   |
+| ------------------------------------------ | -------------------------------------------------------------------------- |
+| `performance`, `ocrMode`                   | opções resolvidas                                                          |
+| `inputFormat`                              | formato detectado; ausente se a entrada falhou antes da detecção           |
+| `passesRequested`, `passesUsed`            | limite solicitado e maior pass tentado                                     |
+| `pagesTotal`, `pagesProcessed`             | páginas declaradas e processadas na etapa de texto nativo                  |
+| `pagesRendered`                            | páginas distintas renderizadas                                             |
+| `renderAttempts`                           | tentativas de reconhecimento que usaram uma superfície renderizada         |
+| `ocrPages`                                 | páginas distintas enviadas ao OCR                                          |
+| `fileSizeBytes`                            | bytes carregados                                                           |
+| `sourceImageWidth`, `sourceImageHeight`    | dimensões decodificadas de JPEG/PNG, quando aplicável                      |
+| `maxPixelsPerPage`, `maxSourceImagePixels` | limites resolvidos                                                         |
+| `durationMs`                               | tempo total em milissegundos                                               |
+| `complete`                                 | cumprimento da política de término sem erro nem truncamento por `maxPages` |
+| `confidenceVersion`                        | versão do contrato de confiança; atualmente `"1.2.0"`                      |
 
-### `validateBoletoCode(value)`
+## Extração em lote
+
+```ts
+function extractBoletoBatch(inputs: readonly BoletoBatchInput[], options?: BatchExtractOptions): Promise<BatchExtractionResult>;
+```
+
+Cada item é uma entrada simples ou um descritor com cabeçalhos próprios:
+
+```ts
+type BoletoBatchInput =
+  | DocumentInput
+  | {
+      input: DocumentInput;
+      requestHeaders?: Readonly<Record<string, string>>;
+    };
+```
+
+`BatchExtractOptions` contém as mesmas opções, com estas diferenças:
+
+- `concurrency?: number` aceita inteiros de 1 a 8 e usa 1 por padrão;
+- `requestHeaders` não existe no nível do lote; use o descritor de cada fonte;
+- `signal` cancela o lote, interrompe agendamento e é repassado às extrações ativas.
+
+O resultado agrega:
+
+- `items`: resultados individuais em ordem de entrada;
+- `results`: boletos com `inputIndex`, agrupados por ordem da entrada;
+- `bestMatch`: maior confiança global, com desempate pelo menor índice;
+- `summary`: contagens por status, total de boletos, concorrência e duração;
+- `metadata`: soma de páginas, renderizações, OCR e bytes, com o maior pass usado;
+- `warnings`: avisos individuais prefixados por `Input <índice>:`.
+
+Um lote inválido (por exemplo, vazio ou com concorrência fora da faixa) retorna `status: "error"`, `items: []` e contabiliza todas as entradas como falhas. Descritores inválidos isolados viram erros apenas nos respectivos itens.
+
+## Helpers de boleto
+
+### `validateBoletoCode`
 
 ```ts
 function validateBoletoCode(value: string): BoletoValidation;
 ```
 
-Não lança para conteúdo inválido — devolve estrutura com `issues`. Aceita 44, 47
-ou 48 dígitos com espaços, pontos e hífens.
+Remove espaços, pontos e hífens de apresentação, identifica o layout pelo comprimento/prefixo, converte para código de barras e verifica semântica e dígitos. Conteúdo inválido é retornado com `isValid: false` e `issues`; esta função não lança por um código de boleto inválido.
 
-```ts
-interface BoletoValidation {
-  isValid: boolean;
-  normalizedValue: string;
-  layout: BoletoLayout | null;
-  representation: BoletoRepresentation | null;
-  barcode: string | null;
-  digitableLine: string | null;
-  formattedDigitableLine: string | null;
-  components: BoletoComponents | null;
-  expectedGeneralCheckDigit: number | null;
-  expectedFieldCheckDigits: BoletoFieldCheckDigits | null;
-  issues: BoletoIssue[];
-}
-
-interface BoletoIssue {
-  code: BoletoIssueCode;
-  message: string;
-  field?: "general" | "field-1" | "field-2" | "field-3" | "field-4";
-  actual?: string | number;
-  expected?: string | number;
-}
-```
-
-`BOLETO_ISSUE_CODES` enumera os códigos estáveis:
-
-```text
-INVALID_FORMAT              INVALID_ISPB
-INVALID_PRODUCT             INVALID_SEGMENT
-INVALID_INSTITUTION_CODE    INVALID_VALUE_IDENTIFIER
-INVALID_CURRENCY_CODE       INVALID_FIELD_CHECK_DIGIT
-INVALID_ISPB_CONFIGURATION  INVALID_GENERAL_CHECK_DIGIT
-```
-
-### `parseBoletoCode(value)`
+### `parseBoletoCode`
 
 ```ts
 function parseBoletoCode(value: string): BoletoComponents;
 ```
 
-Decompõe uma representação estruturalmente suportada. **Lança `TypeError`** se o
-formato não for 44/47/48 dígitos numéricos. Não decide validade — os DVs vêm
-como presentes e esperados, sem julgamento. Não substitui `validateBoletoCode`.
+Decompõe uma forma estruturalmente suportada, inclusive quando os dígitos verificadores estão errados. Lança `TypeError` se não houver exatamente 44, 47 ou 48 dígitos válidos após remover somente os separadores aceitos.
 
 ### Conversões
 
 ```ts
-function toBarcode(value: string): string; // → 44 dígitos
-function toDigitableLine(value: string): string; // → 47 ou 48 dígitos
-function formatDigitableLine(value: string): string; // → apresentação canônica
+function toBarcode(value: string): string;
+function toDigitableLine(value: string): string;
+function formatDigitableLine(value: string): string;
 ```
 
-Todas lançam `TypeError` para entrada não suportada. `toDigitableLine` e
-`formatDigitableLine` também lançam quando um código de barras de arrecadação
-usa identificador de valor fora de `6`, `7`, `8` e `9`, porque o algoritmo de DV
-de campo ficaria indefinido. As conversões preservam strings e zeros à esquerda.
+- `toBarcode` devolve 44 dígitos.
+- `toDigitableLine` devolve 47 dígitos para cobrança ou 48 para arrecadação.
+- `formatDigitableLine` aplica o formato humano canônico.
 
-### Dígitos verificadores
+Essas funções validam a forma, mas não exigem que todos os dígitos verificadores do valor fornecido estejam corretos. Elas lançam `TypeError` para formas inválidas; a conversão de um código de arrecadação também exige identificador de valor `6`, `7`, `8` ou `9`.
+
+### Cálculo de dígitos
 
 ```ts
-function calculateModulo10CheckDigit(body: string): number; // 0..9
-function calculateCobrancaBarcodeCheckDigit(body: string): number; // 1..9
-function calculateArrecadacaoModulo11CheckDigit(body: string): number; // 0..9
+function calculateModulo10CheckDigit(body: string): number;
+function calculateCobrancaBarcodeCheckDigit(body: string): number;
+function calculateArrecadacaoModulo11CheckDigit(body: string): number;
 ```
 
-Cada função recebe o corpo **sem** o DV que será calculado.
-`calculateCobrancaBarcodeCheckDigit` exige exatamente 43 dígitos — o código de
-barras com a posição do DV geral removida — e lança `TypeError` caso contrário.
-As outras duas exigem corpo numérico não vazio.
+- módulo 10 e módulo 11 de arrecadação aceitam um corpo numérico não vazio;
+- o dígito geral de cobrança exige exatamente 43 dígitos;
+- entrada fora do contrato lança `TypeError`.
 
-> Passar nos DVs confirma consistência do código com o layout. Não confirma
-> autenticidade, existência, quitação, situação cadastral ou legitimidade. O
-> pacote não consulta bancos e não é ferramenta antifraude.
+## Códigos de problemas de validação
 
----
+`BOLETO_ISSUE_CODES` expõe os códigos estáveis abaixo:
 
-## Documentos remotos
+| Código                        | Regra                                                   |
+| ----------------------------- | ------------------------------------------------------- |
+| `INVALID_FORMAT`              | forma não numérica ou comprimento diferente de 44/47/48 |
+| `INVALID_PRODUCT`             | produto de arrecadação diferente de `8`                 |
+| `INVALID_INSTITUTION_CODE`    | banco `000` em cobrança                                 |
+| `INVALID_CURRENCY_CODE`       | cobrança bancária sem código de Real `9`                |
+| `INVALID_ISPB_CONFIGURATION`  | instituição `988` sem código de configuração `0`        |
+| `INVALID_ISPB`                | campo ISPB sem seis zeros iniciais ou ISPB não nulo     |
+| `INVALID_SEGMENT`             | segmento de arrecadação não suportado                   |
+| `INVALID_VALUE_IDENTIFIER`    | identificador de valor fora de `6` a `9`                |
+| `INVALID_FIELD_CHECK_DIGIT`   | dígito de um campo divergente                           |
+| `INVALID_GENERAL_CHECK_DIGIT` | dígito geral divergente                                 |
 
-Somente URLs completas `http://` e `https://`, apontando diretamente para bytes
-de PDF, JPEG ou PNG. Páginas HTML, formulários de login e navegação por cookies
-estão fora do escopo.
+Cada `BoletoIssue` possui `code` e `message` e pode incluir `field`, `actual` e `expected`.
 
-O download segue respostas 301, 302, 303, 307 e 308, com no máximo cinco
-redirecionamentos. Cabeçalhos da aplicação sobrevivem a redirecionamentos de
-mesma origem. Quando a origem muda ou HTTPS é rebaixado para HTTP, todos são
-removidos; apenas o `Accept-Encoding: identity` controlado internamente é
-recriado. `maxFileSizeBytes` é aplicado tanto ao `Content-Length` declarado
-quanto aos bytes efetivamente recebidos.
+## Códigos de erro de extração
 
-> **O pacote não é um filtro de SSRF.** Uma URL e seus redirecionamentos podem
-> alcançar qualquer endereço acessível ao processo. Aplicações que recebem URLs
-> de terceiros devem aplicar a própria política de host, DNS/IP e
-> redirecionamento — ou baixar o arquivo com um cliente controlado e entregar os
-> bytes ao extrator.
+| Código               | Situações representadas                                                                                                       |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `INVALID_INPUT`      | entrada vazia/inválida, caminho que não é arquivo, esquema remoto não aceito, credenciais na URL ou falha genérica de leitura |
+| `FILE_NOT_FOUND`     | caminho local inexistente                                                                                                     |
+| `FILE_TOO_LARGE`     | tamanho conhecido ou recebido ultrapassa `maxFileSizeBytes`                                                                   |
+| `DOWNLOAD_ERROR`     | falha de rede, status HTTP não bem-sucedido, corpo ausente ou redirecionamento inválido/excessivo                             |
+| `INVALID_OPTIONS`    | valor fora da faixa, sinal/cabeçalhos inválidos ou cabeçalhos aplicados a entrada não remota                                  |
+| `INVALID_PDF`        | PDF não pôde ser analisado ou possui dimensões de página inválidas                                                            |
+| `UNSUPPORTED_FORMAT` | bytes não correspondem a PDF, JPEG ou PNG                                                                                     |
+| `INVALID_IMAGE`      | estrutura PNG/JPEG truncada, malformada ou indecodificável                                                                    |
+| `PASSWORD_REQUIRED`  | PDF criptografado exige senha; a API não possui opção de senha                                                                |
+| `TIMEOUT`            | prazo configurado atingido                                                                                                    |
+| `ABORTED`            | `AbortSignal` acionado                                                                                                        |
+| `RESOURCE_LIMIT`     | texto ou imagem excede limites seguros, ou memória não pôde ser alocada                                                       |
+| `PROCESSING_ERROR`   | falha interna/dependência não categorizada durante o processamento                                                            |
 
----
+O objeto público de erro contém somente `code` e uma mensagem segura; a exceção original não é devolvida.
 
-## Limites, segurança e escopo
+## Tipos exportados
 
-- A rede é usada apenas para baixar a URL informada. Documentos, texto, códigos
-  e imagens não são enviados a OCR ou processamento externo.
-- O modelo de idioma do OCR é lido do disco local.
-- Resultados estruturados não incluem caminhos, URLs, consultas, buffers nem
-  credenciais. Manter esses dados fora dos logs continua sendo responsabilidade
-  da aplicação chamadora.
-- JPEG e PNG têm largura, altura e área verificadas no cabeçalho antes da
-  decodificação e novamente depois. Cada eixo é limitado a 32.767 pixels, além
-  de `maxSourceImagePixels`.
-- A execução de JavaScript embutido em PDF permanece desabilitada.
-- Recursos de PDF, canvas e OCR são encerrados ao fim da extração.
-- O cancelamento é cooperativo: atua nos pontos de verificação de cada etapa.
-
-**Fora do escopo:** HEIC/HEIF, TIFF, GIF, imagens multipágina e vídeo. Cada JPEG
-ou PNG é uma única página. O pré-processamento não corrige perspectiva — fotos
-muito inclinadas, deformadas, com reflexo, desfoque forte ou código encoberto
-podem terminar legitimamente em `not_found`. Aumentar `passes` amplia as
-tentativas, mas não garante recuperação e não autoriza completar trechos
-ilegíveis. QR Code Pix não é usado como substituto da linha digitável ou do
-código de barras.
-
-## Reconhecimento
-
-O código de barras é lido com ITF e só é aceito quando produz exatamente 44
-dígitos válidos, preservando posição e varrendo regiões da página para localizar
-mais de um boleto.
-
-O OCR usa dados locais em português e preserva blocos e coordenadas. Se a
-primeira leitura textual não produzir código válido, apenas regiões numéricas
-candidatas são repetidas com lista permitida de dígitos. Correções de caracteres
-visualmente confundíveis só são aceitas quando levam a um único código
-integralmente válido; correção ambígua é descartada.
-
-Imagens são documentos visuais de uma página. A primeira passagem mantém o
-quadro completo, sem recorte, contraste ou ampliação, já orientado por EXIF.
-Passagens seguintes, até o limite de `passes`, podem usar recorte conservador de
-margens uniformes, escala de cinza, contraste moderado, redimensionamento
-limitado e rotações discretas. As coordenadas reconhecidas são sempre remapeadas
-para a imagem original. Para tentar todas as rotações de 90 graus, use
-`passes: 5`.
-
-A etapa de texto nativo existe somente em PDF e não conta como passagem visual.
-
----
-
-## Referências normativas
-
-- [Convenção da Cobrança FEBRABAN](https://cmsarquivos.febraban.org.br/Arquivos/documentos/PDF/Conven%C3%A7%C3%A3o%20da%20Cobran%C3%A7a%20-%2005_02_2021_f.pdf)
-- [Layout de Código de Barras de Arrecadação, versão 8](https://cmsarquivos.febraban.org.br/Arquivos/documentos/PDF/Layout%20-%20C%C3%B3digo%20de%20Barras%20-%20Vers%C3%A3o%208%20-%2011_05_2026.pdf)
-- [Especificação técnica do fator de vencimento](https://www.bb.com.br/docs/pub/emp/empl/dwn/Doc5175Bloqueto.pdf)
+Além dos contratos descritos acima, o pacote exporta aliases e interfaces para formatos, status, fontes, opções, resultados individuais e de lote, campos, componentes de cobrança/arrecadação, dígitos e problemas de validação. A lista exata e atual está em [`src/index.ts`](../src/index.ts), e as definições em [`src/types.ts`](../src/types.ts) e [`src/validation/boleto.ts`](../src/validation/boleto.ts).

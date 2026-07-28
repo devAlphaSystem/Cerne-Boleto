@@ -1,169 +1,117 @@
 # CLI
 
-O pacote registra o binário `cerne-boleto`. A saída padrão contém **somente
-JSON** — nada de logs, banners ou texto livre —, o que permite encadear com
-`jq`, `ConvertFrom-Json` ou qualquer consumidor estruturado.
+O pacote registra o executável `cerne-boleto`, gerado a partir de [`src/cli.ts`](../src/cli.ts) e [`src/cli/run.ts`](../src/cli/run.ts).
 
-## Uso
+## Sintaxe
 
 ```text
 cerne-boleto <documento-ou-url>... [opções]
 ```
 
-- **Uma fonte** produz o mesmo envelope de `extractBoletos`.
-- **Duas ou mais fontes** produzem o envelope de `extractBoletoBatch`.
-
-Cada fonte pode ser um caminho local ou uma URL HTTP/HTTPS que retorne
-diretamente bytes de PDF, JPEG ou PNG. O formato é decidido pela assinatura dos
-bytes, também na CLI.
+Ao menos uma fonte é obrigatória, exceto com `--help`. Cada fonte pode ser um caminho local ou uma URL completa HTTP(S) para PDF, JPEG ou PNG.
 
 ```bash
 cerne-boleto ./boleto.pdf --pretty
+cerne-boleto ./foto-boleto.jpg --performance balanced
+cerne-boleto https://documents.example/boleto.png --first --pretty
+cerne-boleto ./boleto.pdf ./foto-boleto.jpg ./conta.png --concurrency 2 --pretty
 ```
 
-```bash
-cerne-boleto ./a.pdf ./foto.jpeg ./conta.png --concurrency 2 --pretty
+No Windows, coloque caminhos com espaços entre aspas:
+
+```powershell
+cerne-boleto "C:\Documentos\boleto julho.pdf" --pretty
 ```
 
 ## Opções
 
-| Opção                     | Valor                          | Padrão     | Efeito                                             |
-| ------------------------- | ------------------------------ | ---------- | -------------------------------------------------- |
-| `--performance <perfil>`  | `fast`, `balanced`, `accurate` | `balanced` | Seleciona resolução, limites e política de OCR     |
-| `--passes <n>`            | `1..5`                         | do perfil  | Número de tentativas visuais distintas             |
-| `--ocr <modo>`            | `never`, `fallback`, `always`  | do perfil  | Controla o OCR local em português                  |
-| `--max-pages <n>`         | `1..10000`                     | do perfil  | Máximo de páginas processadas                      |
-| `--max-file-size <bytes>` | `1..1073741824`                | 30 MiB     | Limite da entrada local ou remota                  |
-| `--max-pixels <n>`        | `250000..100000000`            | do perfil  | Limite da área renderizada por página              |
-| `--max-source-pixels <n>` | `250000..200000000`            | do perfil  | Limite da imagem de origem                         |
-| `--timeout-ms <n>`        | `0..3600000`                   | do perfil  | Prazo de download e extração; `0` desabilita       |
-| `--concurrency <n>`       | `1..8`                         | `1`        | Entradas simultâneas; só faz sentido com 2+ fontes |
-| `--first`                 | —                              | desligado  | Equivale a `stopAfterFirst: true`                  |
-| `--pretty`                | —                              | desligado  | Indenta o JSON com dois espaços                    |
-| `--help`                  | —                              | —          | Imprime o descritor de ajuda em JSON e sai com `0` |
+| Opção                 | Valor                            | Padrão       | Descrição                                     |
+| --------------------- | -------------------------------- | ------------ | --------------------------------------------- |
+| `--performance`       | `fast`, `balanced` ou `accurate` | `balanced`   | seleciona o perfil de recursos e precisão     |
+| `--passes`            | inteiro de 1 a 5                 | perfil       | máximo de receitas de renderização por página |
+| `--ocr`               | `never`, `fallback` ou `always`  | perfil       | controla a participação do OCR                |
+| `--max-pages`         | inteiro de 1 a 10.000            | perfil       | páginas máximas por documento                 |
+| `--max-file-size`     | bytes, inteiro                   | 31.457.280   | tamanho máximo de cada fonte                  |
+| `--max-pixels`        | pixels, inteiro                  | perfil       | área máxima por página renderizada            |
+| `--max-source-pixels` | pixels, inteiro                  | perfil       | área máxima da imagem-fonte                   |
+| `--timeout-ms`        | milissegundos, inteiro           | perfil       | prazo por extração; `0` desabilita            |
+| `--concurrency`       | inteiro de 1 a 8                 | `1`          | concorrência quando há várias fontes          |
+| `--first`             | sem valor                        | desabilitado | encerra após a primeira evidência válida      |
+| `--pretty`            | sem valor                        | desabilitado | formata o JSON com indentação de dois espaços |
+| `--help`              | sem valor                        | —            | escreve a descrição JSON da CLI e termina     |
 
-Todos os valores numéricos precisam ser inteiros não negativos. Qualquer token
-que não comece com `--` é tratado como fonte, então as fontes podem aparecer
-antes, depois ou entre as opções.
+Os limites numéricos completos são os mesmos da API e estão em [API.md](API.md#opções-de-extração). O parser da CLI aceita somente inteiros decimais não negativos; a validação da API resolve as faixas específicas.
 
-Não existe `--document-type`: cobrança e arrecadação são reconhecidas na mesma
-execução.
+`--concurrency` é usado somente quando há mais de uma fonte. Com uma única fonte, a CLI chama `extractBoletos` diretamente.
+
+## Saída
+
+A CLI escreve exatamente um documento JSON seguido de quebra de linha em `stdout`:
+
+- uma fonte: `ExtractionResult`;
+- duas ou mais fontes: `BatchExtractionResult`;
+- ajuda: descritor com nome, uso, formatos, exemplos e opções;
+- argumento inválido: `ExtractionResult` de erro com código `INVALID_INPUT`.
+
+Sem `--pretty`, o JSON é compacto. A saída de negócio não é enviada a `stderr`; consumidores automatizados devem ler `stdout` e também verificar o código do processo.
+
+Exemplo de inspeção com PowerShell:
+
+```powershell
+$result = cerne-boleto .\boleto.pdf | ConvertFrom-Json
+if ($result.success) {
+  $result.bestMatch.formattedDigitableLine
+}
+```
 
 ## Códigos de saída
 
-| Código | Significado                                                        |
-| ------ | ------------------------------------------------------------------ |
-| `0`    | `status` igual a `success`, ou `--help`                            |
-| `2`    | `status` igual a `not_found` — varredura completa, nenhum boleto   |
-| `1`    | `status` igual a `partial` ou `error`, incluindo erro de argumento |
+| Código | Condição                                            |
+| -----: | --------------------------------------------------- |
+|    `0` | `--help` ou resultado com `status: "success"`       |
+|    `2` | resultado com `status: "not_found"`                 |
+|    `1` | resultado `partial`, `error` ou falha de argumentos |
 
-O código é decidido por `status`, não por `success`. Um resultado `partial` que
-encontrou boletos sai com `1`: houve truncamento ou falha, e a varredura não é
-confiável como completa. Trate `1` como "revisar", não necessariamente como
-"nada encontrado".
+Um resultado `partial` pode conter boletos válidos. Não descarte o JSON apenas porque o código de processo é `1`; inspecione `results`, `warnings`, `error` e `metadata.complete`.
 
-Erros de argumento também produzem JSON — um `ExtractionResult` com
-`error.code === "INVALID_INPUT"` — e não texto solto em stderr.
+## Exemplos operacionais
 
-## Sem credenciais na CLI
-
-A CLI **não** aceita cabeçalhos nem senhas, por decisão de projeto. Para
-downloads autenticados use a API com `requestHeaders`:
-
-```ts
-await extractBoletos(url, { requestHeaders: { Authorization: "Bearer <token>" } });
-```
-
-Evite tokens em strings de consulta na linha de comando: argumentos podem
-aparecer no histórico do terminal e na lista de processos do sistema.
-
-PDFs protegidos por senha retornam `PASSWORD_REQUIRED`; não há opção de senha em
-nenhuma das interfaces.
-
-## Exemplos
-
-Extração simples, legível:
+### Priorizar velocidade em PDF com texto
 
 ```bash
-cerne-boleto ./boleto.pdf --performance balanced --pretty
+cerne-boleto ./boleto.pdf --performance fast --pretty
 ```
 
-Foto de boleto, esgotando as rotações:
+O perfil `fast` usa um pass, não ativa OCR por padrão e limita a 10 páginas.
+
+### Forçar OCR de um documento digitalizado
 
 ```bash
-cerne-boleto ./foto-boleto.jpg --performance accurate --passes 5 --pretty
+cerne-boleto ./digitalizacao.pdf --ocr always --performance accurate --pretty
 ```
 
-Varredura rápida sem OCR, parando no primeiro código válido:
+### Limitar recursos
 
 ```bash
-cerne-boleto ./boleto.pdf --performance fast --first
+cerne-boleto ./entrada.pdf --max-pages 5 --max-file-size 10485760 --timeout-ms 45000
 ```
 
-URL pública:
+Se o documento tiver mais de cinco páginas, a execução pode retornar `partial` e um aviso de truncamento, mesmo que já tenha encontrado resultados. `--first` muda a política de término e permite considerar completa a execução encerrada após a primeira evidência.
+
+### Processar lote conservador
 
 ```bash
-cerne-boleto https://documents.example.com/public/boleto.png --pretty
+cerne-boleto ./a.pdf ./b.png ./c.jpg --concurrency 2 --performance balanced --pretty
 ```
 
-Lote com concorrência:
+A ordem em `items` segue a ordem dos argumentos, mesmo que as extrações terminem em momentos diferentes.
 
-```bash
-cerne-boleto ./a.pdf ./b.jpg ./c.png --concurrency 4 --performance balanced --pretty
-```
+## Limitações da CLI
 
-Documento denso com prazo maior:
+- Não há opções para cabeçalhos HTTP; use `extractBoletos` ou descritores de lote na API.
+- Não há opção de senha para PDF criptografado.
+- Não há separador `--` para encerrar opções; uma fonte cujo texto começa por `--` é interpretada como opção.
+- A CLI não lê bytes do `stdin`; cada fonte deve ser caminho ou URL.
+- A CLI não cria servidor nem mantém processo residente.
 
-```bash
-cerne-boleto ./lote-digitalizado.pdf --max-pages 100 --timeout-ms 600000 --pretty
-```
-
-## Consumindo a saída
-
-Somente a linha digitável do melhor resultado:
-
-```bash
-cerne-boleto ./boleto.pdf | jq -r '.bestMatch.digitableLine'
-```
-
-Todos os códigos de barras encontrados:
-
-```bash
-cerne-boleto ./boleto.pdf | jq -r '.results[].barcode'
-```
-
-No PowerShell:
-
-```powershell
-(cerne-boleto ./boleto.pdf | ConvertFrom-Json).bestMatch.formattedDigitableLine
-```
-
-Ramificando por código de saída:
-
-```bash
-cerne-boleto ./boleto.pdf > resultado.json
-case $? in
-  0) echo "boleto encontrado" ;;
-  2) echo "nenhum boleto no documento" ;;
-  *) echo "revisar: $(jq -r '.error.code // .status' resultado.json)" ;;
-esac
-```
-
-Mapeando cada boleto do lote à sua entrada:
-
-```bash
-cerne-boleto ./a.pdf ./b.pdf | jq -r '.results[] | "\(.inputIndex)\t\(.boleto.digitableLine)"'
-```
-
-Lembre que no lote os caminhos não voltam no JSON: a correspondência é feita por
-`inputIndex`, na ordem em que as fontes foram passadas.
-
-## Ajuda
-
-```bash
-cerne-boleto --help
-```
-
-Devolve um descritor JSON com `name`, `usage`, `inputFormats`, `examples` e a
-lista de `options`. `--help` tem precedência sobre qualquer outro argumento e
-sempre sai com `0`.
+Para diagnóstico, use `status`, `error.code`, `warnings` e `metadata.complete` no JSON e consulte os [códigos de erro da API](API.md#códigos-de-erro-de-extração). Ao aceitar URLs ou documentos não confiáveis, valide os destinos, limite os recursos e evite registrar cabeçalhos ou dados extraídos.
