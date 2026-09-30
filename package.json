@@ -1,7 +1,7 @@
 {
   "name": "cerne-boleto",
-  "version": "0.6.0",
-  "updated": "2026.07.28.1054",
+  "version": "0.6.1",
+  "updated": "2026.09.30.1225",
   "description": "O Cerne Boleto extrai códigos validados e informações gerais de boletos em PDF, JPEG ou PNG locais, remotos ou em memória usando somente CPU.",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -56,25 +56,23 @@
     "bench": "node --expose-gc bench/run.mjs",
     "security:audit": "npm audit --audit-level=low",
     "check": "tsc --noEmit && eslint . && prettier --check . && npm run build",
-    "prepack": "npm run check",
-    "prepare": "patch-package"
+    "prepack": "npm run check"
   },
   "dependencies": {
-    "@napi-rs/canvas": "^1.0.3",
+    "@napi-rs/canvas": "^1.0.9",
     "@tesseract.js-data/por": "^1.0.0",
     "@zxing/library": "^0.23.0",
-    "pdfjs-dist": "^6.1.200",
+    "pdfjs-dist": "^6.3.289",
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/node": "^26.1.2",
-    "eslint": "^10.8.0",
-    "patch-package": "^8.0.1",
-    "prettier": "3.9.4",
+    "@types/node": "^26.6.3",
+    "eslint": "^10.11.0",
+    "prettier": "3.9.9",
     "tsup": "^8.5.1",
     "typescript": "~5.9.3",
-    "typescript-eslint": "^8.65.0"
+    "typescript-eslint": "^8.71.0"
   },
   "overrides": {
     "esbuild": "0.27.2"

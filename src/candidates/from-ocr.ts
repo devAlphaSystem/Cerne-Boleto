@@ -99,7 +99,10 @@ function clampConfidence(value: number): number {
  * @returns {Array<CandidateEvidence>} The exact and uniquely corrected candidates in discovery order.
  */
 export function findCandidatesInOcrText(text: string, page: number, pass: number, confidence: number, bounds?: NormalizedBounds): CandidateEvidence[] {
-  const normalized = text.normalize("NFKC").replace(/\u00a0/gu, " ").toUpperCase();
+  const normalized = text
+    .normalize("NFKC")
+    .replace(/\u00a0/gu, " ")
+    .toUpperCase();
   const ocrConfidence = clampConfidence(confidence);
   const exact = findCandidatesInText(normalized, page, {
     source: "ocr",

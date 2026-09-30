@@ -58,18 +58,20 @@ interface BarcodeRuntime {
 let barcodeRuntimePromise: Promise<BarcodeRuntime> | undefined;
 
 function loadBarcodeRuntime(): Promise<BarcodeRuntime> {
-  barcodeRuntimePromise ??= import("@zxing/library").then((imported) => {
-    const zxing = (imported as unknown as { default?: typeof imported }).default ?? imported;
-    const { BarcodeFormat, DecodeHintType } = zxing;
-    const hints = new Map<ZxingLibrary.DecodeHintType, unknown>();
-    hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.ITF]);
-    hints.set(DecodeHintType.ALLOWED_LENGTHS, Int32Array.from([44]));
-    hints.set(DecodeHintType.TRY_HARDER, true);
-    return { zxing, hints };
-  }).catch((error: unknown) => {
-    barcodeRuntimePromise = undefined;
-    throw error;
-  });
+  barcodeRuntimePromise ??= import("@zxing/library")
+    .then((imported) => {
+      const zxing = (imported as unknown as { default?: typeof imported }).default ?? imported;
+      const { BarcodeFormat, DecodeHintType } = zxing;
+      const hints = new Map<ZxingLibrary.DecodeHintType, unknown>();
+      hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.ITF]);
+      hints.set(DecodeHintType.ALLOWED_LENGTHS, Int32Array.from([44]));
+      hints.set(DecodeHintType.TRY_HARDER, true);
+      return { zxing, hints };
+    })
+    .catch((error: unknown) => {
+      barcodeRuntimePromise = undefined;
+      throw error;
+    });
   return barcodeRuntimePromise;
 }
 

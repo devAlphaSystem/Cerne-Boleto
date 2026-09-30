@@ -16,7 +16,12 @@ const CPF_PATTERN = /(?<![A-Z0-9])(?:[0-9]{3}\.?[0-9]{3}\.?[0-9]{3}-?[0-9]{2})(?
 const CNPJ_PATTERN = /(?<![A-Z0-9])(?:[A-Z0-9]{2}\.?[A-Z0-9]{3}\.?[A-Z0-9]{3}\/?[A-Z0-9]{4}-?[0-9]{2})(?![A-Z0-9])/gu;
 
 function comparable(value: string): string {
-  return value.normalize("NFKC").normalize("NFD").replace(/\p{M}/gu, "").replace(/\u00a0/gu, " ").toUpperCase();
+  return value
+    .normalize("NFKC")
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .replace(/\u00a0/gu, " ")
+    .toUpperCase();
 }
 
 function collapseWhitespace(value: string): string {

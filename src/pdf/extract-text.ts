@@ -142,27 +142,30 @@ function reconstructLines(items: PositionedTextItem[]): ExtractedTextLine[] {
     }
   }
 
-  return lines.sort((left, right) => left.y - right.y).map((line) => {
-    const lineItems = line.items.sort((left, right) => left.bounds.x - right.bounds.x);
-    let text = "";
-    let rightEdge: number | null = null;
-    const words: ExtractedTextWord[] = [];
+  return lines
+    .sort((left, right) => left.y - right.y)
+    .map((line) => {
+      const lineItems = line.items.sort((left, right) => left.bounds.x - right.bounds.x);
+      let text = "";
+      let rightEdge: number | null = null;
+      const words: ExtractedTextWord[] = [];
 
-    for (const item of lineItems) {
-      if (rightEdge !== null && item.bounds.x - rightEdge > Math.max(0.001, line.height * 0.08)) {
-        text += " ";
+      for (const item of lineItems) {
+        if (rightEdge !== null && item.bounds.x - rightEdge > Math.max(0.001, line.height * 0.08)) {
+          text += " ";
+        }
+        text += item.str;
+        rightEdge = item.bounds.x + item.bounds.width;
+        words.push(...wordsFromItem(item));
       }
-      text += item.str;
-      rightEdge = item.bounds.x + item.bounds.width;
-      words.push(...wordsFromItem(item));
-    }
 
-    return {
-      text: text.trim(),
-      bounds: unionBounds(lineItems.map((item) => item.bounds)),
-      words,
-    };
-  }).filter((line) => line.text.length > 0);
+      return {
+        text: text.trim(),
+        bounds: unionBounds(lineItems.map((item) => item.bounds)),
+        words,
+      };
+    })
+    .filter((line) => line.text.length > 0);
 }
 
 /**
@@ -198,7 +201,10 @@ export async function extractPageText(page: PdfPageLike): Promise<ExtractedPageT
     items.push(positionedItem(value, viewport));
   }
 
-  const orderedText = items.map((item) => `${item.str}${item.hasEOL ? "\n" : " "}`).join("").trim();
+  const orderedText = items
+    .map((item) => `${item.str}${item.hasEOL ? "\n" : " "}`)
+    .join("")
+    .trim();
   const lines = reconstructLines(items);
   const visualLines = lines.map((line) => line.text);
 

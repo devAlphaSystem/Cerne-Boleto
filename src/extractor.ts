@@ -373,11 +373,13 @@ function expandRegion(bounds: NormalizedBounds): NormalizedBounds {
 }
 
 function numericCandidateRegions(recognition: OcrRecognition): NormalizedBounds[] {
-  const candidates = [...recognition.lines, ...recognition.blocks].filter((item) => {
-    const compact = item.text.replace(/\s/gu, "");
-    const numericCharacters = item.text.match(/[0-9OQDILZSG|]/giu)?.length ?? 0;
-    return numericCharacters >= 24 && numericCharacters / Math.max(1, compact.length) >= 0.55;
-  }).map((item) => expandRegion(item.bounds));
+  const candidates = [...recognition.lines, ...recognition.blocks]
+    .filter((item) => {
+      const compact = item.text.replace(/\s/gu, "");
+      const numericCharacters = item.text.match(/[0-9OQDILZSG|]/giu)?.length ?? 0;
+      return numericCharacters >= 24 && numericCharacters / Math.max(1, compact.length) >= 0.55;
+    })
+    .map((item) => expandRegion(item.bounds));
   const unique = new Map<string, NormalizedBounds>();
   for (const region of candidates) {
     const signature = `${region.x.toFixed(3)}:${region.y.toFixed(3)}:${region.width.toFixed(3)}:${region.height.toFixed(3)}`;

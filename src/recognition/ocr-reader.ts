@@ -205,11 +205,13 @@ function recognitionFromPage(page: TesseractPage, dimensionsInput: ImageDimensio
     const lines: OcrLine[] = [];
     for (const paragraph of block.paragraphs) {
       for (const line of paragraph.lines) {
-        const words = line.words.filter((word) => word.text.trim().length > 0).map((word) => ({
-          text: word.text,
-          confidence: clamp(word.confidence, 0, 100),
-          bounds: normalizedBounds(word.bbox, dimensions),
-        }));
+        const words = line.words
+          .filter((word) => word.text.trim().length > 0)
+          .map((word) => ({
+            text: word.text,
+            confidence: clamp(word.confidence, 0, 100),
+            bounds: normalizedBounds(word.bbox, dimensions),
+          }));
         if (line.text.trim().length > 0 || words.length > 0) {
           lines.push({
             text: line.text.trim(),
